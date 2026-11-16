@@ -32,7 +32,22 @@ const blank = () => ({
 });
 let S;
 try { S = Object.assign(blank(), JSON.parse(localStorage.getItem(KEY) || "{}")); } catch { S = blank(); }
-const save = () => localStorage.setItem(KEY, JSON.stringify(S));
+// ¿El navegador deja guardar? (en navegación privada o en navegadores dentro de otras apps puede que no)
+let canStore = true;
+try { localStorage.setItem(KEY + ".t", "1"); canStore = localStorage.getItem(KEY + ".t") === "1"; localStorage.removeItem(KEY + ".t"); } catch { canStore = false; }
+// Copia de seguridad en IndexedDB: si iOS limpia localStorage, se recupera desde aquí.
+const idb = () => new Promise((ok, bad) => {
+  const r = indexedDB.open("chopperfit", 1);
+  r.onupgradeneeded = () => r.result.createObjectStore("kv");
+  r.onsuccess = () => ok(r.result); r.onerror = () => bad(r.error);
+});
+const idbSet = (k, v) => idb().then((db) => new Promise((ok, bad) => { const t = db.transaction("kv", "readwrite"); t.objectStore("kv").put(v, k); t.oncomplete = ok; t.onerror = () => bad(t.error); })).catch(() => {});
+const idbGet = (k) => idb().then((db) => new Promise((ok) => { const q = db.transaction("kv").objectStore("kv").get(k); q.onsuccess = () => ok(q.result); q.onerror = () => ok(null); })).catch(() => null);
+const save = () => {
+  const json = JSON.stringify(S);
+  try { localStorage.setItem(KEY, json); } catch { canStore = false; }
+  idbSet(KEY, json);
+};
 
 let view = "home";
 let curDate = today();
@@ -287,6 +302,8 @@ function viewHome() {
     </div>
   </header>
   <main class="cards ${slide ? "slide-" + slide : ""}">
+    ${!canStore ? `<div class="warn">⚠️ Este navegador no está guardando tus datos. Abre la app en Safari normal (no en modo privado ni dentro de otra app).</div>`
+      : isIOS && !isInstalled && !S.hideInstall ? `<div class="warn">📲 Para no perder tus datos, instala la app: <b>Compartir → Agregar a pantalla de inicio</b>. Exporta un respaldo aquí (⚙️) e impórtalo en la app instalada. <button class="link" data-act="hideInstall">Entendido</button></div>` : ""}
     <section class="card">
       <div class="card-h"><button class="lbl" data-act="kcalMode">${lbl} ⇅</button>
         <button class="ring-btn" data-act="addFood" aria-label="Agregar comida">${ring(t.kcal / g.kcal, t.kcal > g.kcal * 1.1 ? "#e5533c" : "#f5a524", "+", 64, "kcal")}</button></div>
@@ -442,6 +459,12 @@ function viewStats() {
 
 // ---------- onboarding ----------
 let ob = { step: 0, name: "", petName: "Chopper", sex: "m", age: 25, height: 170, weight: 75, goal: "bajar", goalWeight: 70, pace: 0.5, activity: "moderado", fastH: 12 };
+// El avance del cuestionario también se guarda, para no partir de cero si se cierra a la mitad.
+const OB_KEY = KEY + ".ob";
+try { Object.assign(ob, JSON.parse(localStorage.getItem(OB_KEY) || "{}")); } catch {}
+const saveOb = () => { try { localStorage.setItem(OB_KEY, JSON.stringify(ob)); } catch {} };
+const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+const isInstalled = window.navigator.standalone === true || (window.matchMedia && window.matchMedia("(display-mode: standalone)").matches);
 const OB_STEPS = 6;
 const opt = (field, val, title, desc = "") => `<button class="opt ${String(ob[field]) === String(val) ? "on" : ""}" data-act="obSet" data-f="${field}" data-v="${val}"><b>${title}</b>${desc ? `<small>${desc}</small>` : ""}</button>`;
 const field = (id, label, val, unit, attrs = "") => `<label class="field"><span>${label}</span><div><input id="${id}" value="${esc(val)}" ${attrs}>${unit ? `<em>${unit}</em>` : ""}</div></label>`;
@@ -450,8 +473,11 @@ function viewOnboard() {
   let body = "";
   if (s === 0) body = `<img class="ob-pet" src="assets/chopper.png" alt="Chopper"><h2>¡Hola! Soy tu doctor de a bordo</h2>
     <p>Voy a ayudarte a llevar tus calorías, agua, ayuno y peso. Primero necesito conocerte.</p>
+    ${!canStore ? `<div class="warn">⚠️ Este navegador no deja guardar datos (navegación privada o navegador dentro de otra app). Abre el enlace en <b>Safari</b> normal, o tendrás que ingresar todo cada vez.</div>`
+      : isIOS && !isInstalled ? `<div class="warn">📲 Antes de seguir, instala la app: <b>Compartir → Agregar a pantalla de inicio</b> y ábrela desde el ícono. Lo que ingreses aquí en Safari no pasa a la app instalada.</div>` : ""}
     ${field("ob-name", "¿Cómo te llamas?", ob.name, "", 'placeholder="Tu nombre" autocomplete="given-name"')}
-    ${field("ob-pet", "Nombre de tu mascota", ob.petName, "", 'maxlength="16"')}`;
+    ${field("ob-pet", "Nombre de tu mascota", ob.petName, "", 'maxlength="16"')}
+    <button class="link" data-act="import">Ya tengo un respaldo: importarlo</button>`;
   if (s === 1) body = `<h2>Sobre ti</h2><p>Lo usamos para calcular tu gasto de energía.</p>
     <div class="opts two">${opt("sex", "m", "Hombre")}${opt("sex", "f", "Mujer")}</div>
     ${field("ob-age", "Edad", ob.age, "años", 'inputmode="numeric"')}
@@ -486,6 +512,7 @@ function obRead() {
   if (ob.step === 0) { ob.name = (g("#ob-name") || "").trim(); ob.petName = (g("#ob-pet") || "").trim() || "Chopper"; }
   if (ob.step === 1) { ob.age = clamp(num(g("#ob-age"), 25), 12, 100); ob.height = clamp(num(g("#ob-height"), 170), 100, 230); ob.weight = clamp(num(g("#ob-weight"), 75), 30, 300); }
   if (ob.step === 2 && ob.goal !== "mantener") ob.goalWeight = clamp(num(g("#ob-goalw"), ob.weight), 30, 300);
+  saveOb();
 }
 function obFinish() {
   if (ob.goal === "mantener") ob.goalWeight = ob.weight;
@@ -493,6 +520,8 @@ function obFinish() {
   const first = !S.profile;
   S.profile = p; S.goals = calcPlan(p);
   if (first) { S.weights.push({ d: today(), kg: p.weight, init: true }); S.lastOpen = today(); S.coins += 15; }
+  ob.step = 0; try { localStorage.removeItem(OB_KEY); } catch {}
+  navigator.storage?.persist?.();
   view = "home"; enterNext = true; save(); render(); window.scrollTo(0, 0);
   if (first) toast("🎁 ¡Bienvenido! Chopper te regala 15 ฿");
 }
@@ -703,7 +732,6 @@ function sheetSettings() {
     <div class="meal-h">Respaldo de datos</div>
     <p class="s">Tus datos viven solo en este teléfono. Exporta un respaldo de vez en cuando.</p>
     <div class="btn-row"><button class="btn ghost" data-act="export">⬇️ Exportar</button><button class="btn ghost" data-act="import">⬆️ Importar</button></div>
-    <input type="file" id="importFile" accept="application/json,.json" hidden>
     <button class="btn danger" data-act="wipe">Borrar todos los datos</button>
     <p class="s center">Chopper Fit · proyecto personal de fan, sin fines comerciales.</p>`, "tall");
 }
@@ -857,10 +885,11 @@ const A = {
     a.download = `chopper-fit-${today()}.json`; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 2000);
   },
   import: () => $("#importFile").click(),
+  hideInstall: () => { S.hideInstall = true; save(); render(); },
   wipe: () => { if (confirm("¿Borrar TODOS tus datos? Esto no se puede deshacer.")) { localStorage.removeItem(KEY); location.reload(); } },
-  obSet: (el) => { obRead(); const v = el.dataset.v; ob[el.dataset.f] = isNaN(v) ? v : +v; render(); },
-  obBack: () => { obRead(); ob.step--; render(); },
-  obNext: () => { obRead(); if (ob.step === OB_STEPS - 1) return obFinish(); ob.step++; render(); window.scrollTo(0, 0); },
+  obSet: (el) => { obRead(); const v = el.dataset.v; ob[el.dataset.f] = isNaN(v) ? v : +v; saveOb(); render(); },
+  obBack: () => { obRead(); ob.step--; saveOb(); render(); },
+  obNext: () => { obRead(); if (ob.step === OB_STEPS - 1) return obFinish(); ob.step++; saveOb(); render(); window.scrollTo(0, 0); },
 };
 document.addEventListener("click", (e) => {
   const el = e.target.closest("[data-act]"); if (!el || el.disabled) return;
@@ -878,8 +907,8 @@ document.addEventListener("change", (e) => {
     e.target.files[0].text().then((txt) => {
       const data = JSON.parse(txt);
       if (!data || typeof data !== "object" || !data.profile || !data.days) throw new Error("formato");
-      S = Object.assign(blank(), data); save(); closeSheet(); render(); toast("Respaldo importado");
-    }).catch(() => toast("El archivo no es un respaldo válido"));
+      S = Object.assign(blank(), data); S.lastOpen = S.lastOpen || today(); save(); closeSheet(); enterNext = true; render(); toast("Respaldo importado");
+    }).catch(() => toast("El archivo no es un respaldo válido")).finally(() => { e.target.value = ""; });
   }
 });
 document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeSheet(); if (e.key === "Enter" && e.target.id === "q") searchOnline(); });
@@ -887,6 +916,14 @@ document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeSheet
 // ---------- arranque ----------
 if (S.profile && S.goals) { rollover(); checkChallenges(); save(); }
 render();
+if (!S.profile) idbGet(KEY).then((json) => {
+  if (!json || S.profile) return;
+  try {
+    const data = JSON.parse(json); if (!data.profile || !data.goals) return;
+    S = Object.assign(blank(), data); rollover(); save(); enterNext = true; render(); toast("Datos recuperados");
+  } catch {}
+});
+navigator.storage?.persist?.();
 setInterval(() => {
   if (S.fast.start && $("#fastclock")) $("#fastclock").textContent = hm(fastHours());
   if (S.lastOpen && S.lastOpen !== today() && S.goals) { rollover(); curDate = today(); save(); render(); }

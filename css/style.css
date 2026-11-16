@@ -296,3 +296,5 @@ button:active:not(:disabled) { transform: scale(.95); }
 .scan-bottom { position: absolute; left: 0; right: 0; bottom: 0; height: calc(120px + var(--sab)); padding: 0 24px var(--sab); display: flex; align-items: center; justify-content: space-between; }
 .scan-pill { background: rgba(70,70,70,.9); color: #fff; border-radius: 999px; padding: 15px 22px; font-weight: 700; font-size: 17px; }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; } }
+.warn { background: #fff7e0; border: 1px solid #f3d98a; color: #6b5310; border-radius: 18px; padding: 12px 14px; font-size: 14px; line-height: 1.35; margin: 4px 0 12px; }
+.cards > .warn { margin: 0; border-radius: 22px; }
