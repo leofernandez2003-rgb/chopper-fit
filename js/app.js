@@ -38,6 +38,9 @@ let view = "home";
 let curDate = today();
 let eating = 0; // marca de tiempo de la última comida registrada (animación)
 let statSel = {}; // barra seleccionada por gráfico
+let enterNext = true; // el próximo render anima la entrada de las tarjetas
+let lastGlass = -1; // vaso recién llenado (animación)
+let slide = ""; // dirección del deslizamiento al cambiar de día
 
 const emptyDay = () => ({ foods: [], water: 0, workouts: [], claimed: [] });
 const getDay = (k) => S.days[k] || emptyDay();
@@ -139,6 +142,8 @@ function rollover() {
 function commit() { checkChallenges(); save(); render(); }
 
 // ---------- mascota ----------
+// Duración de cada animación; el desfase negativo evita que se reinicie en cada render.
+const PET_MS = { happy: 2800, eat: 500, party: 900, sleep: 4200, sad: 3600 };
 function mood() {
   const t = totals(today()), g = S.goals.kcal;
   if (Date.now() - eating < 3500) return { id: "eat", fx: "🍴", msg: "¡Ñam! Anotado." };
@@ -151,24 +156,69 @@ function mood() {
 }
 
 // ---------- componentes ----------
-function ring(pct, color, inner, size = 64) {
+function ring(pct, color, inner, size = 64, key = "") {
   const r = size / 2 - 5, c = 2 * Math.PI * r, p = clamp(pct, 0, 1);
   return `<div class="ring" style="width:${size}px;height:${size}px"><svg viewBox="0 0 ${size} ${size}" aria-hidden="true">
     <circle cx="${size / 2}" cy="${size / 2}" r="${r}" fill="none" stroke="#f1f2f4" stroke-width="6"/>
-    <circle cx="${size / 2}" cy="${size / 2}" r="${r}" fill="none" stroke="${color}" stroke-width="6" stroke-linecap="round"
-      stroke-dasharray="${c * p} ${c}" transform="rotate(-90 ${size / 2} ${size / 2})"/></svg><span>${inner}</span></div>`;
+    <circle cx="${size / 2}" cy="${size / 2}" r="${r}" fill="none" stroke="${color}" stroke-width="6" stroke-linecap="round" class="arc"
+      ${key ? `data-ak="ring-${key}" data-ap="strokeDasharray" data-to="${r1(c * p)} ${r1(c)}" data-zero="0 ${r1(c)}"` : ""}
+      style="stroke-dasharray:${r1(c * p)} ${r1(c)}" transform="rotate(-90 ${size / 2} ${size / 2})"/></svg><span>${inner}</span></div>`;
 }
-const bar = (v, g, color) => `<div class="bar"><i style="width:${clamp((v / (g || 1)) * 100, 0, 100)}%;background:${color}"></i></div>`;
+const bar = (v, g, color, key = "") => {
+  const w = r1(clamp((v / (g || 1)) * 100, 0, 100)) + "%";
+  return `<div class="bar"><i ${key ? `data-ak="bar-${key}" data-ap="width" data-to="${w}" data-zero="0%"` : ""} style="width:${w};background:${color}"></i></div>`;
+};
+const cnt = (v, key) => `<span data-cnt="${r0(v)}" data-ck="${key}">${fmt(v)}</span>`;
+
+// Tras cada render, las barras, anillos y números parten del valor anterior y transicionan al nuevo.
+const prevAnim = {}, prevCnt = {};
+const reduced = !!(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches);
+function animateIn(entering) {
+  if (reduced) return;
+  const jobs = [];
+  for (const el of document.querySelectorAll("#app [data-ak]")) {
+    const k = el.dataset.ak, to = el.dataset.to, from = k in prevAnim && !entering ? prevAnim[k] : el.dataset.zero;
+    prevAnim[k] = to;
+    if (from === to) continue;
+    el.style.transition = "none"; el.style[el.dataset.ap] = from; jobs.push(el);
+  }
+  if (jobs.length) { void document.body.offsetWidth; for (const el of jobs) { el.style.transition = ""; el.style[el.dataset.ap] = el.dataset.to; } }
+  for (const el of document.querySelectorAll("#app [data-cnt]")) {
+    const k = el.dataset.ck, to = +el.dataset.cnt, from = k in prevCnt && !entering ? prevCnt[k] : 0;
+    prevCnt[k] = to;
+    if (from === to) continue;
+    const t0 = performance.now(), dur = 550;
+    const step = (t) => {
+      if (!el.isConnected) return;
+      const x = Math.min(1, (t - t0) / dur), e = 1 - Math.pow(1 - x, 3);
+      el.textContent = fmt(from + (to - from) * e);
+      if (x < 1) requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
+  }
+}
 function toast(msg) {
   const el = document.createElement("div"); el.className = "toast"; el.textContent = msg;
   $("#toasts").appendChild(el); setTimeout(() => el.remove(), 3600);
 }
+let closeTimer = 0;
 function sheet(html, cls = "") {
-  $("#sheet").innerHTML = `<div class="sheet-bg" data-act="close"></div><div class="sheet ${cls}" role="dialog" aria-modal="true"><div class="grab"></div>${html}</div>`;
-  $("#sheet").classList.add("open");
+  stopScan(); clearTimeout(closeTimer);
+  const box = $("#sheet"), again = box.classList.contains("open") && !box.classList.contains("closing");
+  box.classList.remove("closing");
+  box.innerHTML = `<div class="sheet-bg" data-act="close"></div><div class="sheet ${cls}" role="dialog" aria-modal="true"><div class="grab"></div>${html}</div>`;
+  box.classList.toggle("noanim", again && cls !== "full");
+  box.classList.add("open");
   lockScroll();
 }
-function closeSheet() { stopScan(); clearTimeout(onlineTimer); onlineCtl?.abort(); $("#sheet").classList.remove("open"); $("#sheet").innerHTML = ""; unlockScroll(); }
+function closeSheet() {
+  const box = $("#sheet");
+  stopScan(); clearTimeout(onlineTimer); onlineCtl?.abort();
+  if (!box.classList.contains("open")) return;
+  clearTimeout(closeTimer);
+  box.classList.remove("noanim"); box.classList.add("closing");
+  closeTimer = setTimeout(() => { box.classList.remove("open", "closing"); box.innerHTML = ""; unlockScroll(); }, reduced ? 0 : 230);
+}
 // Congela el fondo mientras hay una hoja abierta (en iOS el fondo se desplazaba detrás).
 let lockY = null;
 function lockScroll() {
@@ -192,13 +242,16 @@ function render() {
   const y = window.scrollY;
   app.innerHTML = view === "retos" ? viewRetos() : view === "stats" ? viewStats() : viewHome();
   if (lockY == null) window.scrollTo(0, y);
+  const entering = enterNext; enterNext = false;
+  if (entering && !reduced) { app.classList.remove("enter"); void app.offsetWidth; app.classList.add("enter"); }
+  animateIn(entering); slide = "";
 }
 
 function viewHome() {
   const k = curDate, d = getDay(k), t = totals(k), g = S.goals, m = mood(), isToday = k === today();
   const item = SHOP.find((x) => x.id === S.item);
   const mode = S.kcalMode, left = g.kcal - t.kcal;
-  const big = mode === "consumidas" ? fmt(t.kcal) : fmt(Math.abs(left));
+  const big = cnt(mode === "consumidas" ? t.kcal : Math.abs(left), "kcal-" + mode);
   const lbl = mode === "consumidas" ? "Calorías consumidas" : left >= 0 ? "Calorías restantes" : "Calorías de más";
   const sc = dayScore(k);
   const glasses = Math.ceil(g.water / 250), full = Math.floor(d.water / 250);
@@ -219,7 +272,8 @@ function viewHome() {
       <button class="icon-btn" data-act="settings" aria-label="Configuración">⚙️</button>
     </div>
     <div class="bubble">${esc(m.msg)}</div>
-    <div class="pet ${m.id}" data-act="pet">
+    <div class="pet-shadow ${m.id}" style="animation-delay:-${Date.now() % PET_MS[m.id]}ms"></div>
+    <div class="pet ${m.id}" data-act="pet" style="animation-delay:-${Date.now() % PET_MS[m.id]}ms">
       <img src="assets/chopper.png" alt="Chopper" draggable="false">
       ${m.fx ? `<span class="fx">${m.fx}</span>` : ""}${item ? `<span class="buddy">${item.icon}</span>` : ""}
     </div>
@@ -232,15 +286,15 @@ function viewHome() {
       <div class="chips"><span class="chip">🔥 ${streak()}</span><button class="chip" data-act="shop">🏪 ${fmt(S.coins)} ฿</button></div>
     </div>
   </header>
-  <main class="cards">
+  <main class="cards ${slide ? "slide-" + slide : ""}">
     <section class="card">
       <div class="card-h"><button class="lbl" data-act="kcalMode">${lbl} ⇅</button>
-        <button class="ring-btn" data-act="addFood" aria-label="Agregar comida">${ring(t.kcal / g.kcal, t.kcal > g.kcal * 1.1 ? "#e5533c" : "#f5a524", "+")}</button></div>
+        <button class="ring-btn" data-act="addFood" aria-label="Agregar comida">${ring(t.kcal / g.kcal, t.kcal > g.kcal * 1.1 ? "#e5533c" : "#f5a524", "+", 64, "kcal")}</button></div>
       <div class="big">${big}</div>
       <div class="macros">
-        <div><span>Carbohid.</span>${bar(t.c, g.carb, "#f5c043")}<small>${fmt(t.c)} / ${g.carb} g</small></div>
-        <div><span>Grasas</span>${bar(t.f, g.fat, "#3b82f6")}<small>${fmt(t.f)} / ${g.fat} g</small></div>
-        <div><span>Proteínas</span>${bar(t.p, g.prot, "#3fae5c")}<small>${fmt(t.p)} / ${g.prot} g</small></div>
+        <div><span>Carbohid.</span>${bar(t.c, g.carb, "#f5c043", "c")}<small>${fmt(t.c)} / ${g.carb} g</small></div>
+        <div><span>Grasas</span>${bar(t.f, g.fat, "#3b82f6", "f")}<small>${fmt(t.f)} / ${g.fat} g</small></div>
+        <div><span>Proteínas</span>${bar(t.p, g.prot, "#3fae5c", "p")}<small>${fmt(t.p)} / ${g.prot} g</small></div>
       </div>
       ${foodsHtml || `<p class="empty">Aún no hay comidas registradas ${isToday ? "hoy" : "este día"}.</p>`}
       <div class="foot">Meta: ${fmt(g.kcal)} kcal</div>
@@ -248,8 +302,8 @@ function viewHome() {
 
     <section class="card">
       <div class="card-h"><span class="lbl">Calorías quemadas</span>
-        <button class="ring-btn" data-act="addWorkout" aria-label="Agregar entrenamiento">${ring(t.burned / g.burn, "#8b6cf6", "+")}</button></div>
-      <div class="big">${fmt(t.burned)}</div>
+        <button class="ring-btn" data-act="addWorkout" aria-label="Agregar entrenamiento">${ring(t.burned / g.burn, "#8b6cf6", "+", 64, "burn")}</button></div>
+      <div class="big">${cnt(t.burned, "burn")}</div>
       ${d.workouts.map((w) => `<div class="row"><div class="grow"><div class="t">${esc(w.name)}</div><div class="s">${w.min ? w.min + " min · " : ""}${fmt(w.kcal)} kcal</div></div>
         <button class="x" data-act="delWorkout" data-id="${w.id}" aria-label="Eliminar ${esc(w.name)}">✕</button></div>`).join("")}
       <div class="foot">Meta: ${fmt(g.burn)} kcal</div>
@@ -263,9 +317,9 @@ function viewHome() {
 
     <section class="card">
       <div class="card-h"><span class="lbl">Agua</span>
-        <button class="ring-btn" data-act="addWater" aria-label="Agregar agua">${ring(d.water / g.water, "#3b82f6", "+")}</button></div>
-      <div class="big">${fmt(d.water)}<small> ml</small></div>
-      <div class="glasses">${Array.from({ length: glasses }, (_, i) => `<button class="glass ${i < full ? "full" : ""}" data-act="glass" data-i="${i}" aria-label="Vaso ${i + 1}">${i === full ? "+" : ""}</button>`).join("")}</div>
+        <button class="ring-btn" data-act="addWater" aria-label="Agregar agua">${ring(d.water / g.water, "#3b82f6", "+", 64, "water")}</button></div>
+      <div class="big">${cnt(d.water, "water")}<small> ml</small></div>
+      <div class="glasses">${Array.from({ length: glasses }, (_, i) => `<button class="glass ${i < full ? "full" : ""} ${i === lastGlass ? "pop" : ""}" data-act="glass" data-i="${i}" aria-label="Vaso ${i + 1}">${i === full ? "+" : ""}</button>`).join("")}</div>
       <div class="foot">Meta: ${fmt(g.water)} ml</div>
     </section>
 
@@ -273,20 +327,20 @@ function viewHome() {
       <div class="card-h"><span class="lbl">Ayuno</span>
         <button class="pill-btn" data-act="fastToggle">${S.fast.start ? "TERMINAR" : "INICIO"}</button></div>
       ${S.fast.start
-        ? `<div class="big" id="fastclock">${hm(fh)}</div>${bar(fh, g.fastH, fh >= g.fastH ? "#2f9e5b" : "#3b82f6")}
+        ? `<div class="big" id="fastclock">${hm(fh)}</div>${bar(fh, g.fastH, fh >= g.fastH ? "#2f9e5b" : "#3b82f6", "fast")}
            <p class="s">${fh >= g.fastH ? "¡Meta alcanzada! Puedes terminar cuando quieras." : `Faltan ${hm(g.fastH - fh)} para tu meta`}</p>`
         : `<div class="big muted">¿Listo para empezar?</div>`}
       <div class="foot">Meta: ${g.fastH}h de ayuno · ${24 - g.fastH}h de alimentación</div>
     </section>
 
     <section class="card">
-      <div class="card-h"><span class="lbl">Puntuación nutricional</span>${ring((sc || 0) / 100, scoreColor(sc), sc ?? "–")}</div>
+      <div class="card-h"><span class="lbl">Puntuación nutricional</span>${ring((sc || 0) / 100, scoreColor(sc), sc ?? "–", 64, "score")}</div>
       <div class="big">${scoreLabel(sc)}</div>
       <p class="s">Promedio de tus comidas del día según proteína, fibra y densidad calórica.</p>
     </section>
 
     <section class="card">
-      <div class="card-h"><span class="lbl">Fibra</span>${ring(t.fi / g.fiber, "#7cc24a", "🌾")}</div>
+      <div class="card-h"><span class="lbl">Fibra</span>${ring(t.fi / g.fiber, "#7cc24a", "🌾", 64, "fiber")}</div>
       <div class="big">${fmt1(t.fi)}<small> g</small></div>
       <div class="foot">Meta: ${g.fiber} g</div>
     </section>
@@ -315,7 +369,7 @@ function chRow(ch, k, claimed) {
   const show = (n) => (n >= 1000 ? fmt(n) : r0(n));
   return `<div class="ch ${done ? "done" : ""}"><div class="hex">${done ? "✅" : ch.icon}</div>
     <div class="grow"><div class="t">${ch.name}</div><div class="s">${ch.desc}</div>
-      <div class="chbar">${bar(done ? 1 : v, done ? 1 : g, "#f5a524")}<span>${show(Math.min(v, g))} / ${show(g)}</span></div></div>
+      <div class="chbar">${bar(done ? 1 : v, done ? 1 : g, "#f5a524", "ch-" + ch.id)}<span>${show(Math.min(v, g))} / ${show(g)}</span></div></div>
     <div class="reward">${ch.coins} ฿</div></div>`;
 }
 function viewRetos() {
@@ -439,7 +493,7 @@ function obFinish() {
   const first = !S.profile;
   S.profile = p; S.goals = calcPlan(p);
   if (first) { S.weights.push({ d: today(), kg: p.weight, init: true }); S.lastOpen = today(); S.coins += 15; }
-  view = "home"; save(); render(); window.scrollTo(0, 0);
+  view = "home"; enterNext = true; save(); render(); window.scrollTo(0, 0);
   if (first) toast("🎁 ¡Bienvenido! Chopper te regala 15 ฿");
 }
 
@@ -663,43 +717,78 @@ function loadZX() {
   });
 }
 function stopScan() { try { zxReader?.reset(); } catch {} zxReader = null; }
+let torchOn = false;
+const SCAN_HINT = "Escanea el código de barras del envase";
 async function sheetScan() {
-  sheet(`<h2>Código de barras</h2><div class="scanbox"><video id="scanv" playsinline muted></video><div class="scanline"></div></div>
-    <p class="s center" id="scanmsg">Apunta la cámara al código del envase.</p>
-    ${field("scan-code", "O escríbelo a mano", "", "", 'inputmode="numeric" placeholder="7801234567890"')}
-    <button class="btn" data-act="scanManual">Buscar código</button>`, "tall");
+  torchOn = false;
+  sheet(`<div class="scan">
+    <video id="scanv" playsinline muted autoplay></video>
+    <button class="scan-btn scan-x" data-act="close" aria-label="Cerrar">✕</button>
+    <button class="scan-btn scan-flash" data-act="torch" aria-label="Linterna" hidden>⚡</button>
+    <div class="scan-hint" id="scanmsg">${SCAN_HINT}</div>
+    <div class="scan-frame" id="scanframe"><i></i><i></i><i></i><i></i><b></b></div>
+    <div class="scan-manual" id="scanmanual" hidden>
+      <input id="scan-code" inputmode="numeric" placeholder="Código: 7801234567890" autocomplete="off">
+      <button data-act="scanManual">Buscar</button>
+    </div>
+    <div class="scan-bottom">
+      <button class="scan-pill" data-act="addFood">🔖 Mis alimentos</button>
+      <button class="scan-btn" data-act="scanKeyboard" aria-label="Escribir el código">⌨️</button>
+    </div></div>`, "full");
   try {
     await loadZX();
+    if (!$("#scanv")) return;
     zxReader = new ZXing.BrowserMultiFormatReader();
-    await zxReader.decodeFromConstraints({ video: { facingMode: "environment" } }, "scanv", (res) => { if (res) lookupBarcode(res.getText()); });
-  } catch { if ($("#scanmsg")) $("#scanmsg").textContent = "No se pudo abrir la cámara. Escribe el código a mano."; }
+    await zxReader.decodeFromConstraints({ video: { facingMode: { ideal: "environment" }, width: { ideal: 1920 }, height: { ideal: 1080 } } }, "scanv", (res) => {
+      const frame = $("#scanframe");
+      if (!res || !frame || frame.classList.contains("hit")) return;
+      frame.classList.add("hit"); navigator.vibrate?.(60);
+      const code = res.getText(); setTimeout(() => lookupBarcode(code), 350);
+    });
+    const track = $("#scanv")?.srcObject?.getVideoTracks?.()[0];
+    if (track?.getCapabilities?.().torch && $(".scan-flash")) $(".scan-flash").hidden = false;
+  } catch {
+    if ($("#scanmsg")) $("#scanmsg").textContent = "No se pudo abrir la cámara. Revisa el permiso o escribe el código.";
+    if ($("#scanmanual")) $("#scanmanual").hidden = false;
+  }
 }
 async function lookupBarcode(code) {
   code = String(code).replace(/\D/g, ""); if (code.length < 6) return toast("Código no válido");
-  stopScan(); if ($("#scanmsg")) $("#scanmsg").textContent = `Buscando ${code}…`;
+  const fromScan = !!$("#scanframe");
+  if ($("#scanmsg")) $("#scanmsg").textContent = `Buscando ${code}…`;
   try {
     const r = await fetch(`https://world.openfoodfacts.org/api/v2/product/${code}.json?fields=product_name,brands,nutriments,serving_quantity`);
     const j = await r.json(), f = j.status === 1 ? offToFood(j.product) : null;
+    if (fromScan && !$("#scanframe")) return; // se cerró el escáner mientras buscaba
     if (f) return sheetPortion(f);
     toast("Producto no encontrado: créalo a mano"); sheetNewFood();
-  } catch { toast("Sin conexión para buscar el código"); }
+  } catch {
+    toast("Sin conexión para buscar el código");
+    $("#scanframe")?.classList.remove("hit"); if ($("#scanmsg")) $("#scanmsg").textContent = SCAN_HINT;
+  }
 }
 
 // ---------- acciones ----------
 const A = {
   close: closeSheet,
-  nav: (el) => { view = el.dataset.view; curDate = today(); closeSheet(); render(); window.scrollTo(0, 0); },
+  nav: (el) => {
+    if (view === el.dataset.view && curDate === today() && !$("#sheet").classList.contains("open")) return window.scrollTo({ top: 0, behavior: "smooth" });
+    view = el.dataset.view; curDate = today(); enterNext = true; if (lockY != null) lockY = 0; closeSheet(); render(); window.scrollTo(0, 0);
+  },
   fab: sheetAdd,
   settings: sheetSettings, shop: sheetShop, addWater: sheetWater, addWeight: sheetWeight, addWorkout: sheetWorkout,
   addFood: () => sheetSearch(), newFood: () => sheetNewFood(), quickAdd: sheetQuick, scan: sheetScan,
-  pet: () => toast(["¡No me hace feliz que me toques, tonto~ 🩷", "¡Soy un reno, no un mapache!", "¿Ya tomaste agua?", "¡El algodón de azúcar es lo mejor!"][Math.floor(Math.random() * 4)]),
+  pet: (el) => {
+    el.querySelector("img")?.animate?.([{ transform: "scale(1)" }, { transform: "scale(1.09,.88)", offset: 0.3 }, { transform: "scale(.95,1.06)", offset: 0.6 }, { transform: "scale(1)" }], { duration: 520, easing: "cubic-bezier(.3,.7,.3,1)" });
+    toast(["¡No me hace feliz que me toques, tonto~ 🩷", "¡Soy un reno, no un mapache!", "¿Ya tomaste agua?", "¡El algodón de azúcar es lo mejor!"][Math.floor(Math.random() * 4)]);
+  },
   kcalMode: () => { S.kcalMode = S.kcalMode === "consumidas" ? "restantes" : "consumidas"; save(); render(); },
-  prevDay: () => { curDate = addDays(curDate, -1); render(); },
-  nextDay: () => { if (curDate < today()) { curDate = addDays(curDate, 1); render(); } },
+  prevDay: () => { curDate = addDays(curDate, -1); slide = "r"; render(); },
+  nextDay: () => { if (curDate < today()) { curDate = addDays(curDate, 1); slide = "l"; render(); } },
   pickDay: () => { const i = $("#datepick"); i.max = today(); i.value = curDate; i.showPicker ? i.showPicker() : i.click(); },
   delFood: (el) => { const d = mutDay(curDate); d.foods = d.foods.filter((x) => x.id !== el.dataset.id); commit(); },
   delWorkout: (el) => { const d = mutDay(curDate); d.workouts = d.workouts.filter((x) => x.id !== el.dataset.id); commit(); },
-  glass: (el) => { const d = mutDay(curDate), i = +el.dataset.i, full = Math.floor(d.water / 250); d.water = i < full ? i * 250 : (i + 1) * 250; commit(); },
+  glass: (el) => { const d = mutDay(curDate), i = +el.dataset.i, full = Math.floor(d.water / 250); d.water = i < full ? i * 250 : (i + 1) * 250; lastGlass = i < full ? -1 : i; commit(); lastGlass = -1; },
   water: (el) => { const d = mutDay(curDate); d.water = Math.max(0, d.water + +el.dataset.ml); checkChallenges(); save(); render(); sheetWater(); },
   fastToggle: () => {
     if (S.fast.start) {
@@ -747,6 +836,12 @@ const A = {
   equip: (el) => { const x = SHOP.find((s) => s.id === el.dataset.id); if (x.kind === "bg") S.bg = x.id; else S.item = S.item === x.id ? null : x.id; save(); render(); sheetShop(); },
   statSel: (el) => { statSel[el.dataset.chart] = +el.dataset.i; render(); },
   scanManual: () => lookupBarcode($("#scan-code").value),
+  scanKeyboard: () => { const m = $("#scanmanual"); m.hidden = !m.hidden; if (!m.hidden) $("#scan-code").focus(); },
+  torch: () => {
+    const tr = $("#scanv")?.srcObject?.getVideoTracks?.()[0]; torchOn = !torchOn;
+    tr?.applyConstraints({ advanced: [{ torch: torchOn }] }).catch(() => {});
+    $(".scan-flash").classList.toggle("on", torchOn);
+  },
   saveSettings: () => {
     const g = S.goals, v = (id, d, a, b) => clamp(r0(num($(id).value, d)), a, b);
     S.profile.petName = $("#s-pet").value.trim() || "Chopper";
@@ -755,7 +850,7 @@ const A = {
     S.profile.goalWeight = clamp(num($("#s-goalw").value, S.profile.goalWeight), 30, 300);
     closeSheet(); commit(); toast("Cambios guardados");
   },
-  replan: () => { ob = { ...ob, ...S.profile, weight: lastWeight(), step: 1 }; S.goals = null; closeSheet(); render(); window.scrollTo(0, 0); },
+  replan: () => { ob = { ...ob, ...S.profile, weight: lastWeight(), step: 1 }; S.goals = null; if (lockY != null) lockY = 0; closeSheet(); render(); window.scrollTo(0, 0); },
   export: () => {
     const a = document.createElement("a");
     a.href = URL.createObjectURL(new Blob([JSON.stringify(S, null, 1)], { type: "application/json" }));
