@@ -137,7 +137,7 @@ small { font-weight: 500; }
 #sheet { position: fixed; inset: 0; z-index: 40; display: none; }
 #sheet.open { display: block; }
 .sheet-bg { position: absolute; inset: 0; background: rgba(0,0,0,.45); animation: fade .2s; }
-.sheet { position: absolute; left: 50%; transform: translateX(-50%); bottom: 0; width: 100%; max-width: 480px; max-height: 88dvh; overflow-y: auto; background: #fff; border-radius: 28px 28px 0 0; padding: 10px 20px calc(22px + var(--sab)); animation: up .26s cubic-bezier(.2,.8,.3,1); -webkit-overflow-scrolling: touch; }
+.sheet { position: absolute; left: 50%; transform: translateX(-50%); bottom: 0; width: 100%; max-width: 480px; max-height: 88dvh; overflow-y: auto; background: #fff; border-radius: 28px 28px 0 0; padding: 10px 20px calc(22px + var(--sab)); animation: up .26s cubic-bezier(.2,.8,.3,1); -webkit-overflow-scrolling: touch; overscroll-behavior: contain; }
 .sheet.tall { min-height: 70dvh; }
 .sheet.dark { background: #262629; color: #fff; left: auto; right: max(10px, calc(50% - 230px)); transform: none; bottom: calc(10px + var(--sab)); width: calc(100% - 20px); max-width: 420px; border-radius: 32px; padding: 14px 22px 20px; }
 .sheet.dark .grab { display: none; }
@@ -169,7 +169,7 @@ small { font-weight: 500; }
 .field input, .field select { flex: 1; min-width: 0; border: 0; background: none; outline: 0; padding: 15px 0; font-size: 18px; font-weight: 700; -webkit-appearance: none; appearance: none; }
 .field em { font-style: normal; color: var(--ink3); font-weight: 700; }
 .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0 10px; }
-.search { width: 100%; border: 0; outline: 0; background: var(--soft); border-radius: 16px; padding: 15px 16px; font-size: 17px; font-weight: 600; margin: 8px 0; -webkit-appearance: none; }
+.search { position: sticky; top: 0; z-index: 2; box-shadow: 0 0 0 10px #fff; width: 100%; border: 0; outline: 0; background: var(--soft); border-radius: 16px; padding: 15px 16px; font-size: 17px; font-weight: 600; margin: 8px 0; -webkit-appearance: none; }
 .btn { display: block; width: 100%; background: var(--ink); color: #fff; border-radius: 999px; padding: 17px; font-weight: 700; font-size: 17px; margin-top: 12px; text-align: center; }
 .btn.ghost { background: var(--soft); color: var(--ink); }
 .btn.danger { background: #fdecea; color: #c0392b; }
@@ -217,3 +217,7 @@ small { font-weight: 500; }
 @keyframes toast { 0% { transform: translateY(-20px); opacity: 0; } 8%, 88% { transform: none; opacity: 1; } 100% { opacity: 0; } }
 #datepick { position: fixed; top: 0; left: 0; opacity: 0; pointer-events: none; width: 1px; height: 1px; }
 @media (prefers-reduced-motion: reduce) { .pet, .pet .fx, .ob-pet { animation: none !important; } }
+.link { color: var(--green-d); font-weight: 700; text-decoration: underline; }
+.spin { display: inline-block; width: 14px; height: 14px; border: 2px solid #d5d8dc; border-top-color: var(--ink2); border-radius: 50%; vertical-align: -2px; margin-right: 4px; animation: spin .7s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.sheet-bg { touch-action: none; }

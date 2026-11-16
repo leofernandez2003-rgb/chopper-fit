@@ -1,6 +1,6 @@
 // Service worker: deja la app disponible sin conexión.
 // Sube el número de versión en cada publicación para refrescar la caché.
-const CACHE = "chopperfit-v1";
+const CACHE = "chopperfit-v2";
 const SHELL = ["./", "index.html", "css/style.css", "js/data.js", "js/app.js", "manifest.webmanifest",
   "assets/chopper.png", "assets/icon-192.png", "assets/fondos/bg-prado.jpg"];
 

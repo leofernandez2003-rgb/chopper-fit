@@ -166,8 +166,22 @@ function toast(msg) {
 function sheet(html, cls = "") {
   $("#sheet").innerHTML = `<div class="sheet-bg" data-act="close"></div><div class="sheet ${cls}" role="dialog" aria-modal="true"><div class="grab"></div>${html}</div>`;
   $("#sheet").classList.add("open");
+  lockScroll();
 }
-function closeSheet() { stopScan(); $("#sheet").classList.remove("open"); $("#sheet").innerHTML = ""; }
+function closeSheet() { stopScan(); clearTimeout(onlineTimer); onlineCtl?.abort(); $("#sheet").classList.remove("open"); $("#sheet").innerHTML = ""; unlockScroll(); }
+// Congela el fondo mientras hay una hoja abierta (en iOS el fondo se desplazaba detrás).
+let lockY = null;
+function lockScroll() {
+  if (lockY != null) return;
+  lockY = window.scrollY;
+  Object.assign(document.body.style, { position: "fixed", top: `-${lockY}px`, left: "0", right: "0" });
+}
+function unlockScroll() {
+  if (lockY == null) return;
+  const y = lockY; lockY = null;
+  Object.assign(document.body.style, { position: "", top: "", left: "", right: "" });
+  window.scrollTo(0, y);
+}
 
 // ---------- vistas ----------
 function render() {
@@ -177,7 +191,7 @@ function render() {
   document.querySelectorAll("#nav [data-view]").forEach((b) => b.classList.toggle("on", b.dataset.view === view));
   const y = window.scrollY;
   app.innerHTML = view === "retos" ? viewRetos() : view === "stats" ? viewStats() : viewHome();
-  window.scrollTo(0, y);
+  if (lockY == null) window.scrollTo(0, y);
 }
 
 function viewHome() {
@@ -451,36 +465,81 @@ function sheetAdd() {
 }
 
 let searchPool = [];
+let online = { q: "", status: "idle", list: [] }, onlineTimer = 0, onlineCtl = null;
 function sheetSearch(q = "") {
+  online = { q: "", status: "idle", list: [] };
   sheet(`<h2>Buscar alimento</h2>
-    <input id="q" class="search" type="search" placeholder="Ej: marraqueta, pollo, palta…" value="${esc(q)}" autocomplete="off">
+    <input id="q" class="search" type="search" enterkeyhint="search" placeholder="Ej: marraqueta, pollo, monster…" value="${esc(q)}" autocomplete="off" autocorrect="off">
     <div id="results"></div>
-    <div class="btn-row"><button class="btn ghost" data-act="searchOnline">🌐 Buscar en línea</button><button class="btn ghost" data-act="newFood">✏️ Crear</button></div>`, "tall");
+    <div class="btn-row"><button class="btn ghost" data-act="newFood">✏️ Crear alimento</button><button class="btn ghost" data-act="scan">▦ Código</button></div>`, "tall");
   drawResults();
   setTimeout(() => $("#q")?.focus(), 50);
 }
-function drawResults(online) {
-  const q = norm($("#q")?.value || "").trim();
-  let list, title;
-  if (online) { list = online; title = "Open Food Facts"; }
-  else if (!q) { list = [...S.recent, ...S.myFoods.filter((m) => !S.recent.some((r) => r.name === m.name))].slice(0, 25); title = list.length ? "Recientes y mis alimentos" : ""; }
-  else { const words = q.split(/\s+/); list = [...S.myFoods, ...FOODS].filter((f) => words.every((w) => norm(f.name).includes(w))).slice(0, 40); title = ""; }
-  searchPool = list;
-  $("#results").innerHTML = (title ? `<div class="meal-h">${title}</div>` : "") +
-    (list.length ? list.map((f, i) => `<button class="row pick" data-act="pickFood" data-i="${i}"><div class="grow"><div class="t">${esc(f.name)}</div>
-      <div class="s">${esc(f.label || f.portion + " g")} · ${fmt((f.kcal * f.portion) / 100)} kcal</div></div><span class="plus">+</span></button>`).join("")
-      : `<p class="empty">${q ? "Sin resultados aquí. Prueba «Buscar en línea» o crea el alimento." : "Escribe para buscar entre los alimentos."}</p>`);
+const foodRow = (f, i) => `<button class="row pick" data-act="pickFood" data-i="${i}"><div class="grow"><div class="t">${esc(f.name)}</div>
+  <div class="s">${esc(f.label || f.portion + " g")} · ${fmt((f.kcal * f.portion) / 100)} kcal</div></div><span class="plus">+</span></button>`;
+function drawResults() {
+  if (!$("#results")) return;
+  const raw = ($("#q")?.value || "").trim(), q = norm(raw);
+  let local, title = "";
+  if (!q) { local = [...S.recent, ...S.myFoods.filter((m) => !S.recent.some((r) => r.name === m.name))].slice(0, 25); title = local.length ? "Recientes y mis alimentos" : ""; }
+  else { const words = q.split(/\s+/); local = [...S.myFoods, ...FOODS].filter((f) => words.every((w) => norm(f.name).includes(w))).slice(0, 30); }
+  const net = online.q === q ? online : { status: q.length >= 3 ? "loading" : "idle", list: [] };
+  const extra = net.list.filter((o) => !local.some((l) => norm(l.name) === norm(o.name)));
+  searchPool = [...local, ...extra];
+  let html = (title ? `<div class="meal-h">${title}</div>` : "") + local.map(foodRow).join("");
+  if (!q && !local.length) html += `<p class="empty">Escribe para buscar. Con 3 letras o más también se busca en línea.</p>`;
+  if (q && q.length < 3 && !local.length) html += `<p class="empty">Sigue escribiendo…</p>`;
+  if (q.length >= 3) {
+    html += `<div class="meal-h">En línea · Open Food Facts</div>`;
+    if (net.status === "loading") html += `<p class="empty"><span class="spin"></span> Buscando «${esc(raw)}»…</p>`;
+    else if (net.status === "error") html += `<p class="empty">No se pudo conectar con el servidor. <button class="link" data-act="searchOnline">Reintentar</button></p>`;
+    else if (!extra.length) html += `<p class="empty">Sin resultados en línea${local.length ? "" : ". Puedes crearlo a mano"}.</p>`;
+    else html += extra.map((f, i) => foodRow(f, local.length + i)).join("");
+  }
+  $("#results").innerHTML = html;
 }
+function queueOnline() {
+  clearTimeout(onlineTimer); onlineCtl?.abort();
+  const q = norm(($("#q")?.value || "").trim());
+  if (q.length >= 3 && online.q !== q) onlineTimer = setTimeout(searchOnline, 450);
+}
+const offCache = new Map();
+// El servidor de Open Food Facts falla a ratos: se reintenta una vez y se guarda lo ya consultado.
+async function offQuery(host, raw, signal) {
+  const key = host + "|" + norm(raw);
+  if (offCache.has(key)) return offCache.get(key);
+  const url = `https://${host}.openfoodfacts.org/cgi/search.pl?search_terms=${encodeURIComponent(raw)}&search_simple=1&action=process&json=1&page_size=25&fields=product_name,brands,nutriments,serving_quantity`;
+  for (let attempt = 0; ; attempt++) {
+    try {
+      const r = await fetch(url, { signal });
+      if (!r.ok) throw new Error(r.status);
+      const list = ((await r.json()).products || []).map(offToFood).filter(Boolean);
+      offCache.set(key, list);
+      return list;
+    } catch (e) {
+      if (signal.aborted || attempt) throw e;
+      await new Promise((ok) => setTimeout(ok, 1200));
+    }
+  }
+}
+// Busca primero en el catálogo de Chile y completa con el mundial si hay pocos resultados.
 async function searchOnline() {
-  const q = ($("#q")?.value || "").trim();
-  if (q.length < 2) return toast("Escribe al menos 2 letras");
-  $("#results").innerHTML = `<p class="empty">Buscando en Open Food Facts…</p>`;
-  try {
-    const r = await fetch(`https://world.openfoodfacts.org/cgi/search.pl?search_terms=${encodeURIComponent(q)}&search_simple=1&action=process&json=1&page_size=25&fields=product_name,brands,nutriments,serving_quantity`);
-    const j = await r.json();
-    const list = (j.products || []).map(offToFood).filter(Boolean);
-    if ($("#results")) drawResults(list);
-  } catch { if ($("#results")) $("#results").innerHTML = `<p class="empty">No se pudo conectar. Revisa tu internet.</p>`; }
+  const raw = ($("#q")?.value || "").trim(), q = norm(raw);
+  if (q.length < 3) return;
+  clearTimeout(onlineTimer); onlineCtl?.abort();
+  const ctl = (onlineCtl = new AbortController());
+  online = { q, status: "loading", list: [] }; drawResults();
+  let list = [], failed = 0;
+  for (const host of ["cl", "world"]) {
+    try {
+      const more = await offQuery(host, raw, ctl.signal);
+      list = [...list, ...more.filter((m) => !list.some((l) => norm(l.name) === norm(m.name)))];
+    } catch (e) { if (ctl.signal.aborted) return; failed++; }
+    if (ctl.signal.aborted) return;
+    if (list.length) { online = { q, status: list.length >= 8 || host === "world" ? "done" : "loading", list }; drawResults(); }
+    if (list.length >= 8) break;
+  }
+  online = { q, status: !list.length && failed === 2 ? "error" : "done", list }; drawResults();
 }
 function offToFood(p) {
   const n = p.nutriments || {}, kcal = n["energy-kcal_100g"] ?? (n.energy_100g ? n.energy_100g / 4.184 : null);
@@ -713,7 +772,7 @@ document.addEventListener("click", (e) => {
   const fn = A[el.dataset.act]; if (fn) fn(el);
 });
 document.addEventListener("input", (e) => {
-  if (e.target.id === "q") drawResults();
+  if (e.target.id === "q") { drawResults(); queueOnline(); }
   if (e.target.id === "f-g") drawPreview();
   if (e.target.id === "wo-min" || e.target.id === "wo-type") estWorkout();
 });
