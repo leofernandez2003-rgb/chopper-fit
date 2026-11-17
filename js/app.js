@@ -736,10 +736,12 @@ function drawPreview() {
   const v = portionVals(), sc = foodScore(v);
   $("#preview").innerHTML = `<div><b>${fmt(v.kcal)}</b><small>kcal</small></div><div><b>${fmt1(v.c)}</b><small>carbos</small></div><div><b>${fmt1(v.f)}</b><small>grasas</small></div><div><b>${fmt1(v.p)}</b><small>proteína</small></div><div><b>${sc ?? "–"}</b><small>puntos</small></div>`;
 }
-function logFood(entry) {
-  const k = curDate, over = () => totals(k).kcal > S.goals.kcal * 1.15, wasIn = inRange(k), wasOver = over();
-  mutDay(k).foods.push({ id: uid(), t: Date.now(), ...entry });
-  closeSheet(); commit();
+// entry puede ser un alimento o una lista. keep deja abierta la hoja actual (el chat).
+function logFood(entry, { k = curDate, keep = false } = {}) {
+  const over = () => totals(k).kcal > S.goals.kcal * 1.15, wasIn = inRange(k), wasOver = over();
+  for (const x of [entry].flat()) mutDay(k).foods.push({ id: uid(), t: Date.now(), ...x });
+  if (!keep) closeSheet();
+  commit();
   // Chopper come y, si con esto se cumplió la meta o se pasó, celebra o llora una vez.
   const next = k !== today() ? null : inRange(k) && !wasIn ? "party" : over() && !wasOver ? "sad" : null;
   playPet("eat", 2).then((done) => { if (done && next) playPet(next); });
@@ -784,14 +786,14 @@ function estWorkout() {
   const w = WORKOUTS[num($("#wo-type")?.value)], min = num($("#wo-min")?.value);
   if ($("#wo-kcal") && w) $("#wo-kcal").value = r0(w.kpm * min * (lastWeight() / 75));
 }
-function sheetRecipe(id) {
+function sheetRecipe(id, fromChat = false) {
   const r = RECIPES.find((x) => x.id === id); if (!r) return;
   sheet(`<img class="hero" src="assets/recetas/${r.id}.jpg" alt=""><h2>${esc(r.name)}</h2>
     <div class="preview"><div><b>${r.kcal}</b><small>kcal</small></div><div><b>${r.c}</b><small>carbos</small></div><div><b>${r.f}</b><small>grasas</small></div><div><b>${r.p}</b><small>proteína</small></div><div><b>${r.min}</b><small>min</small></div></div>
     <h3>Ingredientes</h3><ul>${r.ing.map((i) => `<li>${esc(i)}</li>`).join("")}</ul>
     <h3>Preparación</h3><ol>${r.steps.map((i) => `<li>${esc(i)}</li>`).join("")}</ol>
     <button class="btn" data-act="logRecipe" data-id="${r.id}">Registrar esta comida</button>
-    <button class="btn ghost" data-act="allRecipes">Ver todas las recetas</button>`, "tall");
+    ${fromChat ? `<button class="btn ghost" data-act="chat">‹ Volver al chat</button>` : `<button class="btn ghost" data-act="allRecipes">Ver todas las recetas</button>`}`, "tall");
 }
 function sheetRecipes() {
   sheet(`<h2>Recetas</h2><p class="s">Toca una para ver los ingredientes y la preparación.</p>
@@ -824,8 +826,275 @@ function sheetSettings() {
     <div class="meal-h">Respaldo de datos</div>
     <p class="s">Tus datos viven solo en este teléfono. Exporta un respaldo de vez en cuando.</p>
     <div class="btn-row"><button class="btn ghost" data-act="export">⬇️ Exportar</button><button class="btn ghost" data-act="import">⬆️ Importar</button></div>
+    <div class="meal-h">Chat con ${esc(S.profile.petName)}</div>
+    <p class="s">${ai.key ? `Conectado a Gemini con tu clave (termina en ${esc(ai.key.slice(-4))}).` : "Conecta el chat con tu clave gratis de Gemini."}</p>
+    <button class="btn ghost" data-act="aiKey">${ai.key ? "Cambiar o quitar la clave" : "Conectar Gemini"}</button>
     <button class="btn danger" data-act="wipe">Borrar todos los datos</button>
     <p class="s center">Chopper Fit · proyecto personal de fan, sin fines comerciales.</p>`, "tall");
+}
+
+// ---------- chat con Chopper (Gemini) ----------
+// Cada persona usa su propia clave gratis de Google AI Studio. La clave y la conversación se guardan solo en el
+// teléfono (fuera de S, así no salen en el respaldo exportado) y las consultas van directo a Google.
+const AI_KEY = KEY + ".ai", CHAT_KEY = KEY + ".chat";
+const GEMINI = "https://generativelanguage.googleapis.com/v1beta";
+// Modelos en orden de preferencia; al conectar se cruzan con los que la clave tiene disponibles.
+const AI_PREF = ["gemini-flash-latest", "gemini-3.6-flash", "gemini-3.8-flash", "gemini-3.5-flash-lite", "gemini-4-hydrogen",
+  "gemini-3.1-flash-lite", "gemini-2.5-flash-lite", "gemini-2.5-flash"];
+let ai = {}; // { key, models, listed, spent: { modelo: hasta }, last }
+try { ai = JSON.parse(localStorage.getItem(AI_KEY) || "{}") || {}; } catch {}
+const saveAi = () => { try { localStorage.setItem(AI_KEY, JSON.stringify(ai)); } catch {} };
+let chat = []; // { role: "user" | "model", text, img?, foods?, recipes?, t }
+try { chat = JSON.parse(localStorage.getItem(CHAT_KEY) || "[]") || []; } catch {}
+function saveChat() {
+  chat = chat.slice(-40);
+  try { localStorage.setItem(CHAT_KEY, JSON.stringify(chat)); }
+  catch { chat.forEach((m) => delete m.img); try { localStorage.setItem(CHAT_KEY, JSON.stringify(chat)); } catch {} } // sin espacio: sin fotos
+}
+let chatBusy = false, chatErr = null, chatImg = null, chatRetryImg = null, chatSeen = 0;
+
+class AiError extends Error { constructor(kind, msg = "", perDay = false) { super(msg); this.kind = kind; this.perDay = perDay; } }
+async function aiFetch(path, body, key = ai.key) {
+  let r;
+  try {
+    r = await fetch(GEMINI + path, { method: body ? "POST" : "GET", body: body ? JSON.stringify(body) : undefined,
+      headers: { "x-goog-api-key": key, ...(body ? { "Content-Type": "application/json" } : {}) } });
+  } catch { throw new AiError("net"); }
+  const j = await r.json().catch(() => ({}));
+  if (r.ok) return j;
+  const e = j.error || {}, info = JSON.stringify(e.details || []) + " " + (e.message || "");
+  if (/API_KEY_INVALID|API key not valid|API_KEY_SERVICE_BLOCKED|leaked/i.test(info) || r.status === 401) throw new AiError("key", e.message);
+  if (r.status === 429) throw new AiError("quota", e.message, /PerDay/i.test(info));
+  if (r.status === 404) throw new AiError("model", e.message);
+  if (r.status >= 500) throw new AiError("busy", e.message);
+  throw new AiError(r.status === 403 ? "key" : "bad", e.message);
+}
+async function aiModels(key) {
+  const j = await aiFetch("/models?pageSize=1000", null, key);
+  const names = (j.models || []).filter((m) => (m.supportedGenerationMethods || []).includes("generateContent")).map((m) => m.name.replace(/^models\//, ""));
+  const pref = AI_PREF.filter((n) => names.includes(n));
+  const extra = names.filter((n) => /flash/.test(n) && !/image|tts|audio|live|embed|native|robot|computer|exp/.test(n) && !pref.includes(n));
+  return pref.length || extra.length ? [...pref, ...extra.slice(0, 4)] : AI_PREF;
+}
+const CHAT_SCHEMA = {
+  type: "OBJECT",
+  properties: {
+    reply: { type: "STRING", description: "Respuesta para el usuario" },
+    foods: { type: "ARRAY", description: "Alimentos para ofrecer anotar (vacío si no aplica)", items: { type: "OBJECT", properties: {
+      name: { type: "STRING" }, meal: { type: "STRING", enum: MEALS.map((m) => m.id) }, g: { type: "NUMBER", description: "gramos aprox." },
+      kcal: { type: "NUMBER" }, c: { type: "NUMBER", description: "carbohidratos g" }, f: { type: "NUMBER", description: "grasas g" },
+      p: { type: "NUMBER", description: "proteínas g" }, fi: { type: "NUMBER", description: "fibra g" } },
+      required: ["name", "meal", "g", "kcal", "c", "f", "p", "fi"] } },
+    recipes: { type: "ARRAY", description: "ids de recetas de la app sugeridas, máximo 3 (vacío si no aplica)", items: { type: "STRING" } },
+  },
+  required: ["reply", "foods", "recipes"],
+};
+function chatSystem() {
+  const p = S.profile, g = S.goals, k = today(), d = getDay(k), t = totals(k), now = new Date();
+  const eaten = d.foods.map((x) => `${mealName(x.meal)}: ${x.name}${x.g ? ` (${fmt(x.g)} g)` : ""}, ${fmt(x.kcal)} kcal`).join("; ") || "nada todavía";
+  const week = [7, 6, 5, 4, 3, 2, 1].map((i) => addDays(k, -i)).map((dk) => `${niceDate(dk)}: ${getDay(dk).foods.length ? fmt(totals(dk).kcal) + " kcal" : "sin registro"}`).join("; ");
+  const goal = { bajar: "bajar de peso", subir: "subir de peso", mantener: "mantener su peso" }[p.goal] || p.goal;
+  return `Eres ${p.petName}, el pequeño reno doctor que acompaña al usuario en Chopper Fit, su app para contar calorías (un proyecto personal de fan).
+Personalidad: tierno, entusiasta y algo tímido; si te halagan te avergüenzas y lo niegas feliz («¡No me hace feliz que me digas eso, tonto~!»). Hablas en español de Chile, de tú y cercano.
+Responde corto: de 1 a 4 frases (unas 70 palabras como máximo), salvo que pida una receta o un plan. Sin listas largas y con pocos emojis. Puedes usar **negrita**.
+Tu tema es la alimentación, las calorías, el agua, el ayuno, el ejercicio y los hábitos; si preguntan otra cosa, responde breve y vuelve con cariño al tema. Usa sus datos para personalizar, sin recitarlos.
+Las calorías son estimaciones: si no dice la cantidad, supón una porción típica en Chile y dilo. No eres un médico de verdad: no diagnostiques; ante síntomas, embarazo, enfermedades, medicamentos o señales de un trastorno alimentario, recomienda con cariño consultar a un profesional. Nunca sugieras comer menos de 1200 kcal al día ni ayunar más de 24 horas.
+Cuando el usuario cuente que comió o va a comer algo, pregunte las calorías de una comida o envíe una foto de comida, pon cada alimento en «foods» con tu estimación (gramos, kcal y macros); la app le mostrará un botón para anotarlo. No digas que ya lo anotaste: dile que puede anotarlo con el botón. Elige «meal» según lo que diga o la hora. Si la foto no es de comida, dilo con humor y deja «foods» vacío.
+Si pide ideas de qué comer, sugiere hasta 3 recetas de la lista de la app en «recipes» (por id) y coméntalas en tu respuesta.
+
+DATOS DEL USUARIO
+- Ahora: ${DOW[now.getDay()]} ${longDate(k)}, ${pad(now.getHours())}:${pad(now.getMinutes())}.
+- ${p.name ? `Se llama ${p.name}. ` : ""}${p.sex === "f" ? "Mujer" : "Hombre"}, ${p.age} años, ${p.height} cm, pesa ${fmt1(lastWeight())} kg. Objetivo: ${goal}${p.goal !== "mantener" ? ` (meta ${fmt1(p.goalWeight)} kg)` : ""}.
+- Metas diarias: ${g.kcal} kcal; carbohidratos ${g.carb} g, grasas ${g.fat} g, proteínas ${g.prot} g, fibra ${g.fiber} g; agua ${g.water} ml; quemar ${g.burn} kcal; ayuno de ${g.fastH} h.
+- Hoy comió: ${eaten}. Total ${fmt(t.kcal)} kcal (C ${fmt(t.c)} g, G ${fmt(t.f)} g, P ${fmt(t.p)} g, fibra ${fmt1(t.fi)} g). ${t.kcal <= g.kcal ? `Le quedan ${fmt(g.kcal - t.kcal)} kcal` : `Se pasó por ${fmt(t.kcal - g.kcal)} kcal`}.
+- Agua hoy: ${fmt(d.water)} ml. Ejercicio hoy: ${d.workouts.map((w) => `${w.name}${w.min ? ` ${w.min} min` : ""}, ${w.kcal} kcal`).join("; ") || "ninguno"}.
+- Ayuno: ${S.fast.start ? `en curso, lleva ${hm(fastHours())}` : "no está ayunando"}.
+- Últimos 7 días: ${week}.
+- Pesos registrados: ${S.weights.slice(-5).map((w) => `${niceDate(w.d)} ${fmt1(w.kg)} kg`).join("; ")}.
+
+RECETAS DE LA APP (id: nombre, comida, kcal)
+${RECIPES.map((r) => `${r.id}: ${r.name}, ${r.type}, ${r.kcal}`).join("\n")}`;
+}
+function parseAi(j) {
+  const c = j.candidates?.[0], txt = (c?.content?.parts || []).filter((x) => !x.thought).map((x) => x.text || "").join("").trim();
+  if (!txt) throw new AiError(j.promptFeedback?.blockReason || /SAFETY|PROHIBITED|BLOCK/.test(c?.finishReason || "") ? "blocked" : "busy");
+  let o = null;
+  try { o = JSON.parse(txt); } catch { try { o = JSON.parse(txt.match(/\{[\s\S]*\}/)?.[0]); } catch {} }
+  if (!o || typeof o.reply !== "string") return { text: txt };
+  const foods = (Array.isArray(o.foods) ? o.foods : []).filter((x) => x?.name && num(x.kcal, -1) >= 0).slice(0, 8).map((x) => ({
+    name: String(x.name).slice(0, 60), meal: MEALS.some((m) => m.id === x.meal) ? x.meal : mealNow(), g: r0(num(x.g)),
+    kcal: r0(num(x.kcal)), c: r1(num(x.c)), f: r1(num(x.f)), p: r1(num(x.p)), fi: r1(num(x.fi)) }));
+  const recipes = [...new Set(Array.isArray(o.recipes) ? o.recipes : [])].filter((id) => RECIPES.some((r) => r.id === id)).slice(0, 3);
+  return { text: o.reply.trim(), foods, recipes };
+}
+// Prueba los modelos en orden. Si uno agotó su cuota gratis o no existe, pasa al siguiente.
+async function aiAsk(contents) {
+  if (!ai.models?.length || Date.now() - (ai.listed || 0) > 7 * 864e5) {
+    try { ai.models = await aiModels(ai.key); ai.listed = Date.now(); saveAi(); }
+    catch (e) { if (e.kind === "key" || e.kind === "net") throw e; if (!ai.models?.length) ai.models = AI_PREF; }
+  }
+  const now = Date.now(), spent = (ai.spent ||= {});
+  const order = [...ai.models].sort((a, b) => (b === ai.last) - (a === ai.last));
+  let err = null;
+  for (const m of order) {
+    if (spent[m] > now) continue;
+    try {
+      const j = await aiFetch(`/models/${m}:generateContent`, {
+        systemInstruction: { parts: [{ text: chatSystem() }] }, contents,
+        generationConfig: { responseMimeType: "application/json", responseSchema: CHAT_SCHEMA },
+      });
+      const res = parseAi(j);
+      ai.last = m; saveAi();
+      return res;
+    } catch (e) {
+      err = e;
+      if (e.kind === "key" || e.kind === "net" || e.kind === "blocked") throw e;
+      if (e.kind === "quota") spent[m] = now + (e.perDay ? 3 * 36e5 : 60e3);
+      if (e.kind === "model") ai.models = ai.models.filter((x) => x !== m);
+      saveAi();
+    }
+  }
+  throw err || new AiError("quota");
+}
+function aiErrMsg(e) {
+  if (e.kind === "key") return { text: "Gemini no aceptó tu clave. Revisa que esté bien copiada o crea una nueva.", fixKey: true };
+  if (e.kind === "net") return { text: "Sin conexión a internet. Revísala e intenta de nuevo.", retry: true };
+  if (e.kind === "quota") return { text: "Se acabaron los mensajes gratis de Gemini por ahora. Intenta en un rato; el límite se renueva cada día.", retry: true };
+  if (e.kind === "busy") return { text: "Gemini está saturado en este momento. Intenta de nuevo.", retry: true };
+  if (e.kind === "blocked") return { text: "Gemini no quiso responder eso. Prueba preguntándolo de otra forma." };
+  return { text: `Algo falló con Gemini${e.message ? ` (${e.message})` : ""}.`, retry: true };
+}
+
+const CHAT_SUGS = ["¿Cómo voy hoy?", "¿Qué ceno con lo que me queda?", "¿Cuántas calorías tiene un completo?", "Dame una idea de snack"];
+const md = (s) => esc(s).replace(/\*\*(.+?)\*\*/g, "<b>$1</b>").replace(/\n/g, "<br>");
+function sheetAiKey(err = "", val = "") {
+  sheet(`<div class="aikey">
+    <img class="chat-av big" src="assets/chopper-av.jpg" alt="">
+    <h2>Habla con ${esc(S.profile.petName)}</h2>
+    <p class="s">El chat usa Gemini, la IA de Google, con tu propia cuenta. Solo necesitas una clave gratis; se hace una vez:</p>
+    <ol>
+      <li>Abre <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">Google AI Studio</a> y entra con tu cuenta de Google.</li>
+      <li>Toca <b>Create API key</b> (Crear clave de API).</li>
+      <li>Cópiala y pégala aquí.</li>
+    </ol>
+    ${field("ai-key", "Clave de Gemini", val, "", `autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="${ai.key ? "…" + esc(ai.key.slice(-4)) : "AIza…"}"`)}
+    ${err ? `<p class="aierr">${esc(err)}</p>` : ""}
+    <button class="btn" data-act="aiSave">${ai.key ? "Guardar" : "Conectar"}</button>
+    ${ai.key ? `<button class="btn ghost" data-act="chat">‹ Volver al chat</button><button class="btn danger" data-act="aiForget">Quitar la clave</button>` : ""}
+    <p class="s aisafe">La clave queda guardada solo en este teléfono. Lo que escribas en el chat y tus datos del día (comidas, metas, peso) se envían a Google para responderte, y con la clave gratis Google puede usarlos para mejorar sus productos.</p>
+  </div>`, "tall");
+}
+function sheetChat() {
+  if (!S.profile) return;
+  if (!ai.key) return sheetAiKey();
+  chatSeen = chat.length;
+  sheet(`<div class="chat">
+    <div class="chat-h">
+      <button class="chat-x" data-act="close" aria-label="Cerrar">‹</button>
+      <img class="chat-av" src="assets/chopper-av.jpg" alt="">
+      <div class="grow"><b>${esc(S.profile.petName)}</b><small id="chatstate"></small></div>
+      <button class="chat-clear" data-act="chatClear" aria-label="Borrar la conversación">🗑️</button>
+    </div>
+    <div class="chat-list" id="chatlist"></div>
+    <div class="chat-att" id="chatatt"></div>
+    <form class="chat-in" id="chatform">
+      <button type="button" class="chat-cam" data-act="chatPhoto" aria-label="Enviar una foto">📷</button>
+      <textarea id="chatq" rows="1" enterkeyhint="send" placeholder="Escríbele a ${esc(S.profile.petName)}…"></textarea>
+      <button type="submit" class="chat-send" aria-label="Enviar">↑</button>
+    </form>
+    <input type="file" id="chatfile" accept="image/*" hidden>
+  </div>`, "full chat");
+  drawChat(); drawAtt(); fitChat();
+}
+function msgHtml(m, i) {
+  const anim = i >= chatSeen ? " new" : "";
+  if (m.role === "user") return `<div class="msg me${m.img && !m.text ? " pic" : ""}${anim}">${m.img ? `<img src="${m.img}" alt="Foto">` : ""}${m.text ? md(m.text) : ""}</div>`;
+  const foods = m.foods || [], left = foods.filter((x) => !x.done);
+  return `<div class="msg bot${anim}">${md(m.text)}</div>` +
+    (foods.length ? `<div class="chat-card${anim}">${foods.map((x, j) => `<div class="row"><div class="grow"><div class="t">${esc(x.name)}</div>
+        <div class="s">${mealName(x.meal)}${x.g ? ` · ${fmt(x.g)} g` : ""} · <b>${fmt(x.kcal)} kcal</b> · C ${fmt(x.c)} · G ${fmt(x.f)} · P ${fmt(x.p)}</div></div>
+        ${x.done ? `<span class="ok" aria-label="Anotado">✓</span>` : `<button class="pill-btn" data-act="chatLog" data-i="${i}" data-j="${j}">Anotar</button>`}</div>`).join("")}
+      ${left.length > 1 ? `<button class="btn" data-act="chatLog" data-i="${i}" data-j="all">Anotar todo · ${fmt(left.reduce((n, x) => n + x.kcal, 0))} kcal</button>` : ""}</div>` : "") +
+    (m.recipes?.length ? `<div class="chat-card${anim}">${m.recipes.map((id) => RECIPES.find((r) => r.id === id)).filter(Boolean).map((r) =>
+      `<button class="recipe" data-act="chatRecipe" data-id="${r.id}"><img src="assets/recetas/${r.id}.jpg" alt="" loading="lazy"><div class="grow"><div class="t">${esc(r.name)}</div><div class="s">${r.kcal} kcal · ${r.min} min</div></div></button>`).join("")}</div>` : "");
+}
+function drawChat(keepScroll = false) {
+  const box = $("#chatlist"); if (!box) return;
+  const y = box.scrollTop;
+  let html = chat.length ? "" : `<div class="msg bot">¡Hola${S.profile.name ? ", " + esc(S.profile.name) : ""}! Soy ${esc(S.profile.petName)} 🩺 Pregúntame qué comer o cuántas calorías tiene algo, o mándame una foto de tu plato y te lo calculo.</div>
+    <div class="chat-sugs">${CHAT_SUGS.map((q) => `<button data-act="chatSug" data-q="${esc(q)}">${esc(q)}</button>`).join("")}</div>`;
+  html += chat.map(msgHtml).join("");
+  if (chatErr) html += `<div class="msg err">${esc(chatErr.text)}${chatErr.retry ? ` <button class="link" data-act="chatRetry">Reintentar</button>` : ""}${chatErr.fixKey ? ` <button class="link" data-act="aiKey">Cambiar la clave</button>` : ""}</div>`;
+  if (chatBusy) html += `<div class="msg bot typing" aria-label="Escribiendo"><i></i><i></i><i></i></div>`;
+  box.innerHTML = html;
+  chatSeen = chat.length;
+  box.scrollTop = keepScroll ? y : box.scrollHeight;
+  if ($("#chatstate")) $("#chatstate").textContent = chatBusy ? "escribiendo…" : "con Gemini";
+}
+function drawAtt() {
+  const el = $("#chatatt"); if (!el) return;
+  el.innerHTML = chatImg ? `<div class="att"><img src="${chatImg.thumb}" alt="Foto adjunta"><button data-act="chatUnatt" aria-label="Quitar la foto">✕</button></div>` : "";
+}
+function growChat() {
+  const q = $("#chatq"); if (!q) return;
+  q.style.height = "auto"; q.style.height = Math.min(q.scrollHeight, 120) + "px";
+}
+// En iOS el teclado tapa la parte de abajo: el chat se ajusta al área visible.
+function fitChat() {
+  const el = $(".sheet.chat"), vv = window.visualViewport; if (!el || !vv) return;
+  Object.assign(el.style, { top: vv.offsetTop + "px", bottom: "auto", height: vv.height + "px" });
+  el.classList.toggle("kb", window.innerHeight - vv.height > 120);
+  const box = $("#chatlist"); if (box) box.scrollTop = box.scrollHeight;
+}
+window.visualViewport?.addEventListener("resize", fitChat);
+window.visualViewport?.addEventListener("scroll", fitChat);
+// La foto se achica antes de enviarla (máx. 1024 px) y se guarda una miniatura para el historial.
+async function prepImg(file) {
+  const url = URL.createObjectURL(file);
+  try {
+    const im = await new Promise((ok, bad) => { const i = new Image(); i.onload = () => ok(i); i.onerror = bad; i.src = url; });
+    const draw = (max, q) => {
+      const s = Math.min(1, max / Math.max(im.naturalWidth, im.naturalHeight)), c = document.createElement("canvas");
+      c.width = Math.round(im.naturalWidth * s); c.height = Math.round(im.naturalHeight * s);
+      c.getContext("2d").drawImage(im, 0, 0, c.width, c.height);
+      return c.toDataURL("image/jpeg", q);
+    };
+    return { data: draw(1024, 0.82).split(",")[1], thumb: draw(320, 0.62) };
+  } finally { URL.revokeObjectURL(url); }
+}
+function sendChat(text) {
+  text = String(text ?? $("#chatq")?.value ?? "").trim();
+  const img = chatImg;
+  if (chatBusy || (!text && !img)) return;
+  chatErr = null; chatImg = null; drawAtt();
+  if ($("#chatq")) { $("#chatq").value = ""; growChat(); }
+  chat.push({ role: "user", text, img: img?.thumb, t: Date.now() }); saveChat();
+  askChat(img);
+}
+async function askChat(img) {
+  chatBusy = true; chatErr = null; drawChat();
+  // Se envían los últimos mensajes como contexto; solo la foto del último va completa.
+  const hist = chat.slice(-16);
+  while (hist.length && hist[0].role !== "user") hist.shift();
+  const contents = hist.map((m, i) => {
+    if (m.role === "user") {
+      const parts = [];
+      if (i === hist.length - 1 && img) parts.push({ inlineData: { mimeType: "image/jpeg", data: img.data } });
+      else if (m.img) parts.push({ text: "[Aquí envió una foto]" });
+      parts.push({ text: m.text || "¿Qué es esto y cuántas calorías tiene?" });
+      return { role: "user", parts };
+    }
+    const offered = m.foods?.length ? `\n(Le ofrecí anotar: ${m.foods.map((x) => `${x.name} ${x.kcal} kcal${x.done ? ", ya anotado" : ""}`).join("; ")})` : "";
+    return { role: "model", parts: [{ text: m.text + offered }] };
+  });
+  try {
+    const res = await aiAsk(contents);
+    chat.push({ role: "model", t: Date.now(), ...res }); saveChat(); chatRetryImg = null;
+    if (!$("#chatlist")) toast(`💬 ${S.profile.petName} te respondió`);
+  } catch (e) {
+    chatErr = aiErrMsg(e); chatRetryImg = img;
+  }
+  chatBusy = false; drawChat();
 }
 
 // ---------- código de barras ----------
@@ -954,6 +1223,42 @@ const A = {
     closeSheet(); commit();
   },
   recipe: (el) => sheetRecipe(el.dataset.id), allRecipes: sheetRecipes,
+  chat: sheetChat,
+  chatSug: (el) => sendChat(el.dataset.q),
+  chatRetry: () => { if (!chatBusy) askChat(chatRetryImg); },
+  chatPhoto: () => $("#chatfile")?.click(),
+  chatUnatt: () => { chatImg = null; drawAtt(); },
+  chatRecipe: (el) => sheetRecipe(el.dataset.id, true),
+  chatLog: (el) => {
+    const m = chat[+el.dataset.i]; if (!m?.foods) return;
+    const list = el.dataset.j === "all" ? m.foods.filter((x) => !x.done) : [m.foods[+el.dataset.j]].filter((x) => x && !x.done);
+    if (!list.length) return;
+    logFood(list.map(({ done, ...x }) => x), { k: today(), keep: true });
+    list.forEach((x) => (x.done = true)); saveChat(); drawChat(true);
+    toast(`🍽️ Anotado: ${list.length > 1 ? list.length + " alimentos" : list[0].name} · ${fmt(list.reduce((n, x) => n + x.kcal, 0))} kcal`);
+  },
+  // Se confirma con un segundo toque.
+  chatClear: (el) => {
+    if (!el.classList.contains("sure")) {
+      el.classList.add("sure"); el.textContent = "¿Borrar?";
+      return setTimeout(() => { if (el.isConnected) { el.classList.remove("sure"); el.textContent = "🗑️"; } }, 3000);
+    }
+    chat = []; chatErr = null; saveChat(); drawChat(); el.classList.remove("sure"); el.textContent = "🗑️";
+  },
+  aiKey: () => sheetAiKey(),
+  aiSave: async (el) => {
+    const k = ($("#ai-key")?.value || "").replace(/\s+/g, "");
+    if (!k) return ai.key ? sheetChat() : toast("Pega tu clave de Gemini");
+    el.disabled = true; el.innerHTML = `<span class="spin"></span> Probando la clave…`;
+    try {
+      const models = await aiModels(k);
+      ai = { key: k, models, listed: Date.now(), spent: {} }; saveAi();
+      if ($("#ai-key")) { toast("✅ Chopper ya está conectado"); sheetChat(); }
+    } catch (e) {
+      if ($("#ai-key")) sheetAiKey(e.kind === "key" ? "Esa clave no funciona. Revisa que esté completa." : e.kind === "net" ? "Sin conexión. Intenta de nuevo." : `Gemini respondió: ${e.message || "error"}`, k);
+    }
+  },
+  aiForget: () => { ai = {}; saveAi(); closeSheet(); toast("Clave de Gemini quitada"); },
   logRecipe: (el) => { const r = RECIPES.find((x) => x.id === el.dataset.id); logFood({ name: r.name, meal: r.type, kcal: r.kcal, c: r.c, f: r.f, p: r.p, fi: r.fi }); },
   buy: (el) => {
     const x = SHOP.find((s) => s.id === el.dataset.id); if (!x || S.coins < x.price) return;
@@ -985,7 +1290,7 @@ const A = {
   },
   import: () => $("#importFile").click(),
   hideInstall: () => { S.hideInstall = true; save(); render(); },
-  wipe: () => { if (confirm("¿Borrar TODOS tus datos? Esto no se puede deshacer.")) { localStorage.removeItem(KEY); location.reload(); } },
+  wipe: () => { if (confirm("¿Borrar TODOS tus datos? Esto no se puede deshacer.")) { [KEY, CHAT_KEY, AI_KEY].forEach((k) => localStorage.removeItem(k)); idbSet(KEY, null).then(() => location.reload()); } },
   obSet: (el) => { obRead(); const v = el.dataset.v; ob[el.dataset.f] = isNaN(v) ? v : +v; saveOb(); render(); },
   obBack: () => { obRead(); ob.step--; saveOb(); render(); },
   obNext: () => { obRead(); if (ob.step === OB_STEPS - 1) return obFinish(); ob.step++; saveOb(); render(); window.scrollTo(0, 0); },
@@ -998,9 +1303,17 @@ document.addEventListener("input", (e) => {
   if (e.target.id === "q") { drawResults(); queueOnline(); }
   if (e.target.id === "f-g") drawPreview();
   if (e.target.id === "wo-min" || e.target.id === "wo-type") estWorkout();
+  if (e.target.id === "chatq") growChat();
 });
+document.addEventListener("submit", (e) => { if (e.target.id === "chatform") { e.preventDefault(); sendChat(); } });
+// Tocar «enviar» no debe cerrar el teclado.
+document.addEventListener("mousedown", (e) => { if (e.target.closest?.(".chat-send")) e.preventDefault(); });
 document.addEventListener("change", (e) => {
   if (e.target.id === "wo-type") estWorkout();
+  if (e.target.id === "chatfile" && e.target.files[0]) {
+    prepImg(e.target.files[0]).then((img) => { chatImg = img; drawAtt(); $("#chatq")?.focus(); })
+      .catch(() => toast("No se pudo leer la foto")).finally(() => { e.target.value = ""; });
+  }
   if (e.target.id === "datepick" && e.target.value) { curDate = e.target.value > today() ? today() : e.target.value; render(); }
   if (e.target.id === "importFile" && e.target.files[0]) {
     e.target.files[0].text().then((txt) => {
@@ -1010,7 +1323,11 @@ document.addEventListener("change", (e) => {
     }).catch(() => toast("El archivo no es un respaldo válido")).finally(() => { e.target.value = ""; });
   }
 });
-document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeSheet(); if (e.key === "Enter" && e.target.id === "q") searchOnline(); });
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") closeSheet();
+  if (e.key === "Enter" && e.target.id === "q") searchOnline();
+  if (e.key === "Enter" && !e.shiftKey && !e.isComposing && e.target.id === "chatq") { e.preventDefault(); sendChat(); }
+});
 
 // ---------- arranque ----------
 if (S.profile && S.goals) { rollover(); checkChallenges(); save(); }
