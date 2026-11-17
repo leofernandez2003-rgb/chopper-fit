@@ -184,10 +184,14 @@ function commit() { checkChallenges(); save(); render(); }
 
 // ---------- mascota ----------
 // Chopper descansa quieto y reacciona con clips cortos (WebP con transparencia) que se ven una vez:
-// saluda al abrir la app, come al registrar, celebra la meta, llora si se pasa y se acuesta al empezar un ayuno.
-// En ayuno duerme acostado. Todos los WebP comparten el mismo lienzo, así que solo cambia la imagen.
+// saluda al abrir la app, come al registrar, toma agua, celebra la meta, llora si se pasa y se acuesta al empezar un ayuno.
+// Al tocarlo a veces baila o se sienta. En ayuno duerme acostado.
+// Todos los WebP comparten el mismo encuadre (las poses nuevas en HD tienen más píxeles), así que solo cambia la imagen.
 const PET_FRAME = 62; // ms por cuadro de los clips
-const PET_CLIPS = { happy: 48, eat: 32, party: 48, sad: 48, lie: 40 }; // cuadros de cada reacción
+// Duración de cada reacción en cuadros de 62 ms. Las poses nuevas van y vuelven solas al reposo.
+const PET_CLIPS = { happy: 48, eat: 32, party: 48, sad: 48, lie: 40, sentado: 81, agua: 81, baile: 81 };
+const PET_TAP = [["happy", 0.4], ["party", 0.2], ["baile", 0.2], ["sentado", 0.2]];
+const petTapPick = () => { let r = Math.random(); return PET_TAP.find(([, p]) => (r -= p) < 0)?.[0] ?? "happy"; };
 const petFile = (id) => `assets/chopper/${id}.webp`;
 const ZZ = `<span class="zz" aria-hidden="true"><i>z</i><i>z</i><i>z</i></span>`;
 // Una sola <img> que sobrevive a los render: así una reacción no se corta ni vuelve al inicio al redibujar.
@@ -239,6 +243,8 @@ async function playPet(id, times = 1) {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
   return last;
 }
+// Al sumar agua Chopper toma un vaso (salvo que esté durmiendo en ayuno o ya esté tomando).
+const drinkPet = () => { if (!fasting() && petPlaying !== "agua") playPet("agua"); };
 let petsLoaded = false;
 function preloadPets() {
   if (petsLoaded || reduced) return;
@@ -247,6 +253,7 @@ function preloadPets() {
     ["happy", "eat", "party", "sad", "lie"].forEach(petBlob);
     new Image().src = petFile(fasting() ? "rest" : "sleep");
   }, 1500);
+  setTimeout(() => ["agua", "baile", "sentado"].forEach(petBlob), 6000); // más pesadas: después
 }
 // Al abrir (o volver a) la app: con ayuno en curso se muestra su pantalla; si no, Chopper saluda.
 function greet() {
@@ -1275,7 +1282,7 @@ const A = {
     if (fasting()) return sheetFast();
     if (petPlaying) return;
     if (reduced || petFailed) el.querySelector("img")?.animate?.([{ transform: "scale(1)" }, { transform: "scale(1.09,.88)", offset: 0.3 }, { transform: "scale(.95,1.06)", offset: 0.6 }, { transform: "scale(1)" }], { duration: 520, easing: "cubic-bezier(.3,.7,.3,1)" });
-    else playPet(Math.random() < 0.65 ? "happy" : "party");
+    else playPet(petTapPick());
     toast(["¡No me hace feliz que me toques, tonto~ 🩷", "¡Soy un reno, no un mapache!", "¿Ya tomaste agua?", "¡El algodón de azúcar es lo mejor!"][Math.floor(Math.random() * 4)]);
   },
   kcalMode: () => { S.kcalMode = S.kcalMode === "consumidas" ? "restantes" : "consumidas"; save(); render(); },
@@ -1284,8 +1291,8 @@ const A = {
   pickDay: () => { const i = $("#datepick"); i.max = today(); i.value = curDate; i.showPicker ? i.showPicker() : i.click(); },
   delFood: (el) => { const d = mutDay(curDate); d.foods = d.foods.filter((x) => x.id !== el.dataset.id); commit(); },
   delWorkout: (el) => { const d = mutDay(curDate); d.workouts = d.workouts.filter((x) => x.id !== el.dataset.id); commit(); },
-  glass: (el) => { const d = mutDay(curDate), i = +el.dataset.i, full = Math.floor(d.water / 250); d.water = i < full ? i * 250 : (i + 1) * 250; lastGlass = i < full ? -1 : i; commit(); lastGlass = -1; },
-  water: (el) => { const d = mutDay(curDate); d.water = Math.max(0, d.water + +el.dataset.ml); checkChallenges(); save(); render(); sheetWater(); },
+  glass: (el) => { const d = mutDay(curDate), i = +el.dataset.i, full = Math.floor(d.water / 250); d.water = i < full ? i * 250 : (i + 1) * 250; lastGlass = i < full ? -1 : i; commit(); lastGlass = -1; if (i >= full) drinkPet(); },
+  water: (el) => { const d = mutDay(curDate); d.water = Math.max(0, d.water + +el.dataset.ml); checkChallenges(); save(); render(); sheetWater(); if (+el.dataset.ml > 0) drinkPet(); },
   // Con un ayuno en curso se abre su pantalla; desde ahí se termina.
   fastToggle: () => {
     if (S.fast.start) return sheetFast();

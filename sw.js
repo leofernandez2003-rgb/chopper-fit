@@ -1,6 +1,7 @@
 // Service worker: deja la app disponible sin conexión.
 // Sube el número de versión en cada publicación para refrescar la caché.
-const CACHE = "chopperfit-v10";
+// Las poses nuevas de Chopper (más pesadas) no se precargan aquí: se guardan en caché la primera vez que se piden.
+const CACHE = "chopperfit-v11";
 const SHELL = ["./", "index.html", "css/style.css", "js/data.js", "js/app.js", "manifest.webmanifest",
   "assets/chopper.png", "assets/chopper-av.jpg", "assets/icon-192.png", "assets/fondos/bg-prado.jpg",
   ...["rest", "nap", "sleep", "happy", "eat", "party", "sad", "lie"].map((m) => `assets/chopper/${m}.webp`)];
