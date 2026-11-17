@@ -54,6 +54,7 @@ let curDate = today();
 let eating = 0; // marca de tiempo de la última comida registrada (animación)
 let statSel = {}; // barra seleccionada por gráfico
 let enterNext = true; // el próximo render anima la entrada de las tarjetas
+let enterTimer = 0;
 let lastGlass = -1; // vaso recién llenado (animación)
 let slide = ""; // dirección del deslizamiento al cambiar de día
 
@@ -159,6 +160,38 @@ function commit() { checkChallenges(); save(); render(); }
 // ---------- mascota ----------
 // Duración de cada animación; el desfase negativo evita que se reinicie en cada render.
 const PET_MS = { happy: 2800, eat: 500, party: 900, sleep: 4200, sad: 3600 };
+// Animaciones dibujadas de Chopper (WebP con transparencia), una por estado de ánimo.
+const PET_MOODS = ["happy", "eat", "party", "sleep", "sad"];
+const petSrc = (id) => (reduced ? "assets/chopper.png" : `assets/chopper/${id}.webp`);
+// Una sola <img> que sobrevive a los render: así la animación no vuelve al primer cuadro cada vez.
+const petImg = Object.assign(new Image(), { alt: "Chopper", draggable: false, decoding: "async" });
+let petMood = "happy", petFailed = false;
+// Con el clip animado sobran el balanceo y los filtros del CSS; con la imagen fija se mantienen.
+function syncPetClip() {
+  const on = !petFailed && /\.webp$/.test(petImg.getAttribute("src") || "");
+  petImg.classList.toggle("clip", on);
+  petImg.closest(".pet")?.classList.toggle("clip", on);
+  $("#app .pet-shadow")?.classList.toggle("clip", on);
+}
+petImg.onerror = () => {
+  if (petImg.getAttribute("src") === "assets/chopper.png") return;
+  petFailed = true; petImg.setAttribute("src", "assets/chopper.png"); syncPetClip();
+};
+function mountPet() {
+  const slot = $("#app img[data-pet]");
+  if (!slot) return;
+  const src = petFailed ? "assets/chopper.png" : petSrc(petMood);
+  if (petImg.getAttribute("src") !== src) petImg.setAttribute("src", src);
+  petImg.className = slot.className;
+  slot.replaceWith(petImg);
+  syncPetClip();
+}
+let petsLoaded = false;
+function preloadPets() {
+  if (petsLoaded || reduced) return;
+  petsLoaded = true;
+  setTimeout(() => PET_MOODS.forEach((id) => { new Image().src = petSrc(id); }), 1200);
+}
 function mood() {
   const t = totals(today()), g = S.goals.kcal;
   if (Date.now() - eating < 3500) return { id: "eat", fx: "🍴", msg: "¡Ñam! Anotado." };
@@ -251,19 +284,25 @@ function unlockScroll() {
 // ---------- vistas ----------
 function render() {
   const app = $("#app");
-  if (!S.profile || !S.goals) { app.innerHTML = viewOnboard(); $("#nav").hidden = true; return; }
+  if (!S.profile || !S.goals) { petMood = "happy"; app.innerHTML = viewOnboard(); mountPet(); $("#nav").hidden = true; return; }
   $("#nav").hidden = false;
   document.querySelectorAll("#nav [data-view]").forEach((b) => b.classList.toggle("on", b.dataset.view === view));
   const y = window.scrollY;
   app.innerHTML = view === "retos" ? viewRetos() : view === "stats" ? viewStats() : viewHome();
+  mountPet(); preloadPets();
   if (lockY == null) window.scrollTo(0, y);
   const entering = enterNext; enterNext = false;
-  if (entering && !reduced) { app.classList.remove("enter"); void app.offsetWidth; app.classList.add("enter"); }
+  if (entering && !reduced) {
+    app.classList.remove("enter"); void app.offsetWidth; app.classList.add("enter");
+    // Al terminar la entrada se quita la clase: si no, cada render repetía la animación y Chopper quedaba quieto.
+    clearTimeout(enterTimer); enterTimer = setTimeout(() => app.classList.remove("enter"), 800);
+  }
   animateIn(entering); slide = "";
 }
 
 function viewHome() {
   const k = curDate, d = getDay(k), t = totals(k), g = S.goals, m = mood(), isToday = k === today();
+  petMood = m.id;
   const item = SHOP.find((x) => x.id === S.item);
   const mode = S.kcalMode, left = g.kcal - t.kcal;
   const big = cnt(mode === "consumidas" ? t.kcal : Math.abs(left), "kcal-" + mode);
@@ -289,7 +328,7 @@ function viewHome() {
     <div class="bubble">${esc(m.msg)}</div>
     <div class="pet-shadow ${m.id}" style="animation-delay:-${Date.now() % PET_MS[m.id]}ms"></div>
     <div class="pet ${m.id}" data-act="pet" style="animation-delay:-${Date.now() % PET_MS[m.id]}ms">
-      <img src="assets/chopper.png" alt="Chopper" draggable="false">
+      <img data-pet alt="Chopper">
       ${m.fx ? `<span class="fx">${m.fx}</span>` : ""}${item ? `<span class="buddy">${item.icon}</span>` : ""}
     </div>
     <div class="scene-bar">
@@ -471,7 +510,7 @@ const field = (id, label, val, unit, attrs = "") => `<label class="field"><span>
 function viewOnboard() {
   const s = ob.step;
   let body = "";
-  if (s === 0) body = `<img class="ob-pet" src="assets/chopper.png" alt="Chopper"><h2>¡Hola! Soy tu doctor de a bordo</h2>
+  if (s === 0) body = `<img class="ob-pet" data-pet alt="Chopper"><h2>¡Hola! Soy tu doctor de a bordo</h2>
     <p>Voy a ayudarte a llevar tus calorías, agua, ayuno y peso. Primero necesito conocerte.</p>
     ${!canStore ? `<div class="warn">⚠️ Este navegador no deja guardar datos (navegación privada o navegador dentro de otra app). Abre el enlace en <b>Safari</b> normal, o tendrás que ingresar todo cada vez.</div>`
       : isIOS && !isInstalled ? `<div class="warn">📲 Antes de seguir, instala la app: <b>Compartir → Agregar a pantalla de inicio</b> y ábrela desde el ícono. Lo que ingreses aquí en Safari no pasa a la app instalada.</div>` : ""}

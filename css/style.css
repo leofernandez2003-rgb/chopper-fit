@@ -45,6 +45,14 @@ small { font-weight: 500; }
 .pet-shadow { position: absolute; z-index: 0; left: 50%; bottom: 52px; width: 130px; height: 22px; margin-left: -30px; border-radius: 50%; background: rgba(0,0,0,.2); filter: blur(5px); will-change: transform, opacity; }
 .pet-shadow.happy { animation: shadow-bob 2.8s cubic-bezier(.45,0,.55,1) infinite; }
 .pet-shadow.party { animation: shadow-jump .9s infinite; }
+/* Clips animados (assets/chopper/*.webp, lienzo 576×704 con Chopper de 389 px de ancho).
+   La caja se agranda para que Chopper conserve su tamaño (205 px) y su posición de siempre;
+   el movimiento ya viene en el clip, así que se apagan el balanceo y los filtros por ánimo. */
+.pet.clip { width: 304px; margin-left: -121px; bottom: 33px; animation: none; }
+.pet.clip img { filter: drop-shadow(0 10px 8px rgba(0,0,0,.28)); }
+.pet.clip .fx { top: 60px; right: 42px; }
+.pet.clip .buddy { bottom: 34px; left: 7px; }
+.pet-shadow.clip { animation: none; }
 @keyframes bob { 0%, 100% { transform: translate3d(0,0,0) rotate(-1deg); } 50% { transform: translate3d(0,-9px,0) rotate(1.5deg); } }
 @keyframes shadow-bob { 0%, 100% { transform: scale(1); opacity: 1; } 50% { transform: scale(.9); opacity: .75; } }
 @keyframes munch { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.05, .94); } }
@@ -222,6 +230,7 @@ small { font-weight: 500; }
 .ob-body > p { color: var(--ink2); margin-bottom: 14px; }
 .ob-body .field > div { background: #fff; }
 .ob-pet { display: block; width: 170px; margin: 0 auto 18px; animation: bob 2.6s ease-in-out infinite; filter: drop-shadow(0 10px 8px rgba(0,0,0,.2)); }
+.ob-pet.clip { width: 252px; margin: -48px auto -6px; animation: none; }
 .opts { display: grid; gap: 10px; margin: 14px 0; }
 .opts.two { grid-template-columns: 1fr 1fr; } .opts.three { grid-template-columns: repeat(3, 1fr); }
 .opt { background: #fff; border-radius: 18px; padding: 16px; text-align: left; border: 2px solid transparent; }
