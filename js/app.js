@@ -921,8 +921,11 @@ function drawSettingsPlan() {
 const AI_KEY = KEY + ".ai", CHAT_KEY = KEY + ".chat";
 const GEMINI = "https://generativelanguage.googleapis.com/v1beta";
 // Modelos en orden de preferencia; al conectar se cruzan con los que la clave tiene disponibles.
-const AI_PREF = ["gemini-flash-latest", "gemini-3.6-flash", "gemini-3.8-flash", "gemini-3.5-flash-lite", "gemini-4-hydrogen",
-  "gemini-3.1-flash-lite", "gemini-2.5-flash-lite", "gemini-2.5-flash"];
+// Primero los «Flash-Lite»: casi no «piensan» antes de responder (los Flash sí, y en la versión gratis tardaban mucho).
+const AI_PREF = ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-flash-lite-latest", "gemini-3.6-flash", "gemini-flash-latest",
+  "gemini-3.8-flash", "gemini-4-hydrogen", "gemini-2.5-flash-lite", "gemini-2.5-flash"];
+// Tiempo máximo por modelo y para toda la respuesta (si uno no contesta, se prueba el siguiente).
+const AI_T = { try: 25000, total: 60000, slow: 8000 };
 let ai = {}; // { key, models, listed, spent: { modelo: hasta }, last }
 try { ai = JSON.parse(localStorage.getItem(AI_KEY) || "{}") || {}; } catch {}
 const saveAi = () => { try { localStorage.setItem(AI_KEY, JSON.stringify(ai)); } catch {} };
@@ -933,16 +936,16 @@ function saveChat() {
   try { localStorage.setItem(CHAT_KEY, JSON.stringify(chat)); }
   catch { chat.forEach((m) => delete m.img); try { localStorage.setItem(CHAT_KEY, JSON.stringify(chat)); } catch {} } // sin espacio: sin fotos
 }
-let chatBusy = false, chatErr = null, chatImg = null, chatRetryImg = null, chatSeen = 0;
+let chatBusy = false, chatSlow = false, chatCtl = null, chatErr = null, chatImg = null, chatRetryImg = null, chatSeen = 0;
 
 class AiError extends Error { constructor(kind, msg = "", perDay = false) { super(msg); this.kind = kind; this.perDay = perDay; } }
-async function aiFetch(path, body, key = ai.key) {
-  let r;
+async function aiFetch(path, body, key = ai.key, signal) {
+  let r, j;
   try {
-    r = await fetch(GEMINI + path, { method: body ? "POST" : "GET", body: body ? JSON.stringify(body) : undefined,
+    r = await fetch(GEMINI + path, { method: body ? "POST" : "GET", body: body ? JSON.stringify(body) : undefined, signal,
       headers: { "x-goog-api-key": key, ...(body ? { "Content-Type": "application/json" } : {}) } });
-  } catch { throw new AiError("net"); }
-  const j = await r.json().catch(() => ({}));
+    j = await r.json().catch((e) => { if (signal?.aborted) throw e; return {}; });
+  } catch { throw new AiError(signal?.aborted ? "timeout" : "net"); }
   if (r.ok) return j;
   const e = j.error || {}, info = JSON.stringify(e.details || []) + " " + (e.message || "");
   if (/API_KEY_INVALID|API key not valid|API_KEY_SERVICE_BLOCKED|leaked/i.test(info) || r.status === 401) throw new AiError("key", e.message);
@@ -1009,32 +1012,48 @@ function parseAi(j) {
   const recipes = [...new Set(Array.isArray(o.recipes) ? o.recipes : [])].filter((id) => RECIPES.some((r) => r.id === id)).slice(0, 3);
   return { text: o.reply.trim(), foods, recipes };
 }
-// Prueba los modelos en orden. Si uno agotó su cuota gratis o no existe, pasa al siguiente.
-async function aiAsk(contents) {
+// Prueba los modelos en orden. Si uno agotó su cuota gratis, no existe o no contesta a tiempo, pasa al siguiente.
+async function aiAsk(contents, ctl) {
   if (!ai.models?.length || Date.now() - (ai.listed || 0) > 7 * 864e5) {
     try { ai.models = await aiModels(ai.key); ai.listed = Date.now(); saveAi(); }
     catch (e) { if (e.kind === "key" || e.kind === "net") throw e; if (!ai.models?.length) ai.models = AI_PREF; }
   }
-  const now = Date.now(), spent = (ai.spent ||= {});
-  const order = [...ai.models].sort((a, b) => (b === ai.last) - (a === ai.last));
+  const start = Date.now(), spent = (ai.spent ||= {}), noThink = (ai.noThink ||= {});
+  const rank = (m) => { const i = AI_PREF.indexOf(m); return i < 0 ? AI_PREF.length : i; };
+  const order = [...ai.models].sort((a, b) => rank(a) - rank(b));
   let err = null;
   for (const m of order) {
-    if (spent[m] > now) continue;
+    const left = AI_T.total - (Date.now() - start);
+    if (spent[m] > Date.now()) continue;
+    if (left < 5000) { err = new AiError("timeout"); break; }
+    const tc = new AbortController(), stop = () => tc.abort();
+    const timer = setTimeout(stop, Math.min(AI_T.try, left));
+    ctl.signal.addEventListener("abort", stop);
     try {
-      const j = await aiFetch(`/models/${m}:generateContent`, {
-        systemInstruction: { parts: [{ text: chatSystem() }] }, contents,
-        generationConfig: { responseMimeType: "application/json", responseSchema: CHAT_SCHEMA },
-      });
+      const body = { systemInstruction: { parts: [{ text: chatSystem() }] }, contents,
+        generationConfig: { responseMimeType: "application/json", responseSchema: CHAT_SCHEMA } };
+      // Los Flash (no Lite) piensan bastante por defecto: se les pide pensar poco. Si el modelo no acepta la opción, se quita.
+      const think = !/lite/.test(m) && !noThink[m];
+      if (think) body.generationConfig.thinkingConfig = { thinkingLevel: "low" };
+      let j;
+      try { j = await aiFetch(`/models/${m}:generateContent`, body, ai.key, tc.signal); }
+      catch (e) {
+        if (!think || e.kind !== "bad") throw e;
+        noThink[m] = true; delete body.generationConfig.thinkingConfig;
+        j = await aiFetch(`/models/${m}:generateContent`, body, ai.key, tc.signal);
+      }
       const res = parseAi(j);
       ai.last = m; saveAi();
       return res;
     } catch (e) {
+      if (ctl.signal.aborted) throw new AiError("cancel");
       err = e;
       if (e.kind === "key" || e.kind === "net" || e.kind === "blocked") throw e;
-      if (e.kind === "quota") spent[m] = now + (e.perDay ? 3 * 36e5 : 60e3);
+      if (e.kind === "quota") spent[m] = Date.now() + (e.perDay ? 3 * 36e5 : 60e3);
+      if (e.kind === "timeout") spent[m] = Date.now() + 15 * 60e3; // lento: se deja de lado un rato
       if (e.kind === "model") ai.models = ai.models.filter((x) => x !== m);
       saveAi();
-    }
+    } finally { clearTimeout(timer); ctl.signal.removeEventListener("abort", stop); }
   }
   throw err || new AiError("quota");
 }
@@ -1043,6 +1062,8 @@ function aiErrMsg(e) {
   if (e.kind === "net") return { text: "Sin conexión a internet. Revísala e intenta de nuevo.", retry: true };
   if (e.kind === "quota") return { text: "Se acabaron los mensajes gratis de Gemini por ahora. Intenta en un rato; el límite se renueva cada día.", retry: true };
   if (e.kind === "busy") return { text: "Gemini está saturado en este momento. Intenta de nuevo.", retry: true };
+  if (e.kind === "timeout") return { text: "Gemini no respondió a tiempo. Intenta de nuevo; si sigue lento, prueba en un rato.", retry: true };
+  if (e.kind === "cancel") return { text: "Cancelaste la respuesta.", retry: true };
   if (e.kind === "blocked") return { text: "Gemini no quiso responder eso. Prueba preguntándolo de otra forma." };
   return { text: `Algo falló con Gemini${e.message ? ` (${e.message})` : ""}.`, retry: true };
 }
@@ -1107,11 +1128,12 @@ function drawChat(keepScroll = false) {
     <div class="chat-sugs">${CHAT_SUGS.map((q) => `<button data-act="chatSug" data-q="${esc(q)}">${esc(q)}</button>`).join("")}</div>`;
   html += chat.map(msgHtml).join("");
   if (chatErr) html += `<div class="msg err">${esc(chatErr.text)}${chatErr.retry ? ` <button class="link" data-act="chatRetry">Reintentar</button>` : ""}${chatErr.fixKey ? ` <button class="link" data-act="aiKey">Cambiar la clave</button>` : ""}</div>`;
-  if (chatBusy) html += `<div class="msg bot typing" aria-label="Escribiendo"><i></i><i></i><i></i></div>`;
+  if (chatBusy) html += `<div class="msg bot typing" aria-label="Escribiendo"><i></i><i></i><i></i></div>` +
+    (chatSlow ? `<div class="chat-wait">Gemini está tardando más de lo normal… <button class="link" data-act="chatCancel">Cancelar</button></div>` : "");
   box.innerHTML = html;
   chatSeen = chat.length;
   box.scrollTop = keepScroll ? y : box.scrollHeight;
-  if ($("#chatstate")) $("#chatstate").textContent = chatBusy ? "escribiendo…" : "con Gemini";
+  if ($("#chatstate")) $("#chatstate").textContent = chatBusy ? "escribiendo…" : `con Gemini${ai.last ? " · " + ai.last.replace(/^gemini-/, "") : ""}`;
 }
 function drawAtt() {
   const el = $("#chatatt"); if (!el) return;
@@ -1146,7 +1168,9 @@ function sendChat(text) {
   askChat(img);
 }
 async function askChat(img) {
-  chatBusy = true; chatErr = null; drawChat();
+  const ctl = (chatCtl = new AbortController());
+  chatBusy = true; chatSlow = false; chatErr = null; drawChat();
+  const slowT = setTimeout(() => { if (chatCtl === ctl) { chatSlow = true; drawChat(); } }, AI_T.slow);
   // Se envían los últimos mensajes como contexto; solo la foto del último va completa.
   const hist = chat.slice(-16);
   while (hist.length && hist[0].role !== "user") hist.shift();
@@ -1160,15 +1184,21 @@ async function askChat(img) {
     }
     const offered = m.foods?.length ? `\n(Le ofrecí anotar: ${m.foods.map((x) => `${x.name} ${x.kcal} kcal${x.done ? ", ya anotado" : ""}`).join("; ")})` : "";
     return { role: "model", parts: [{ text: m.text + offered }] };
-  });
+  }).reduce((out, c) => { // dos mensajes seguidos del mismo lado se juntan en un turno
+    const prev = out[out.length - 1];
+    if (prev?.role === c.role) prev.parts.push(...c.parts); else out.push(c);
+    return out;
+  }, []);
   try {
-    const res = await aiAsk(contents);
+    const res = await aiAsk(contents, ctl);
+    if (chatCtl !== ctl) return; // se borró la conversación mientras esperaba
     chat.push({ role: "model", t: Date.now(), ...res }); saveChat(); chatRetryImg = null;
     if (!$("#chatlist")) toast(`💬 ${S.profile.petName} te respondió`);
   } catch (e) {
+    if (chatCtl !== ctl) return;
     chatErr = aiErrMsg(e); chatRetryImg = img;
-  }
-  chatBusy = false; drawChat();
+  } finally { clearTimeout(slowT); }
+  chatCtl = null; chatBusy = false; chatSlow = false; drawChat();
 }
 
 // ---------- código de barras ----------
@@ -1303,6 +1333,7 @@ const A = {
   chat: sheetChat,
   chatSug: (el) => sendChat(el.dataset.q),
   chatRetry: () => { if (!chatBusy) askChat(chatRetryImg); },
+  chatCancel: () => chatCtl?.abort(),
   chatPhoto: () => $("#chatfile")?.click(),
   chatUnatt: () => { chatImg = null; drawAtt(); },
   chatRecipe: (el) => sheetRecipe(el.dataset.id, true),
@@ -1320,7 +1351,8 @@ const A = {
       el.classList.add("sure"); el.textContent = "¿Borrar?";
       return setTimeout(() => { if (el.isConnected) { el.classList.remove("sure"); el.textContent = "🗑️"; } }, 3000);
     }
-    chat = []; chatErr = null; saveChat(); drawChat(); el.classList.remove("sure"); el.textContent = "🗑️";
+    const ctl = chatCtl; chatCtl = null; ctl?.abort();
+    chat = []; chatErr = null; chatBusy = chatSlow = false; saveChat(); drawChat(); el.classList.remove("sure"); el.textContent = "🗑️";
   },
   aiKey: () => sheetAiKey(),
   aiSave: async (el) => {
