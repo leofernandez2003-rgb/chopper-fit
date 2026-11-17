@@ -69,18 +69,44 @@ const ACT = [
   { id: "moderado", name: "Moderadamente activo", desc: "Ejercicio 3–5 días por semana", f: 1.55, burn: 600 },
   { id: "muy", name: "Muy activo", desc: "Ejercicio intenso 6–7 días", f: 1.725, burn: 750 },
 ];
+// Plan diario (Mifflin-St Jeor × actividad ± el déficit o superávit del ritmo elegido).
+// Al llegar al peso meta, el plan pasa solo a mantención.
 function calcPlan(p) {
   const bmr = 10 * p.weight + 6.25 * p.height - 5 * p.age + (p.sex === "m" ? 5 : -161);
   const act = ACT.find((a) => a.id === p.activity) || ACT[0];
   const tdee = bmr * act.f;
-  const delta = p.goal === "mantener" ? 0 : (p.pace * 7700) / 7 * (p.goal === "bajar" ? -1 : 1);
-  const kcal = r0(Math.max(p.sex === "m" ? 1500 : 1200, tdee + delta));
-  const weeks = p.goal === "mantener" || !p.pace ? 0 : Math.ceil(Math.abs(p.weight - p.goalWeight) / p.pace);
+  const mode = p.goal === "bajar" && p.weight > p.goalWeight + 0.2 ? "bajar" : p.goal === "subir" && p.weight < p.goalWeight - 0.2 ? "subir" : "mantener";
+  const delta = mode === "mantener" ? 0 : (p.pace * 7700) / 7 * (mode === "bajar" ? -1 : 1);
+  const floor = p.sex === "m" ? 1500 : 1200, raw = tdee + delta;
+  const kcal = Math.round(Math.max(floor, raw) / 10) * 10;
+  // Proteína por kilo (más al bajar o subir, para cuidar el músculo); grasas 28 %; el resto, carbohidratos.
+  const ref = mode === "bajar" ? (p.weight + p.goalWeight) / 2 : p.weight;
+  const prot = r0(clamp(ref * (mode === "mantener" ? 1.5 : 1.8), (kcal * 0.15) / 4, (kcal * 0.35) / 4));
+  const fat = r0((kcal * 0.28) / 9), carb = r0(Math.max(0, kcal - prot * 4 - fat * 9) / 4);
+  const weeks = mode === "mantener" || !p.pace ? 0 : Math.ceil(Math.abs(p.weight - p.goalWeight) / p.pace);
   return {
-    kcal, carb: r0((kcal * 0.48) / 4), fat: r0((kcal * 0.29) / 9), prot: r0((kcal * 0.23) / 4),
-    fiber: r0((kcal / 1000) * 14), water: clamp(Math.round((p.weight * 27) / 250) * 250, 1500, 4000),
+    kcal, carb, fat, prot, fiber: r0((kcal / 1000) * 14), water: clamp(Math.round((p.weight * 33) / 250) * 250, 1500, 4000),
     burn: act.burn, fastH: p.fastH, weeks, targetDate: weeks ? addDays(today(), weeks * 7) : null,
+    tdee: r0(tdee), mode, floored: raw < floor,
   };
+}
+const GOAL_KEYS = ["kcal", "carb", "fat", "prot", "fiber", "water", "burn"];
+const planNow = (prof = S.profile) => calcPlan({ ...prof, weight: lastWeight() });
+// Con las metas automáticas, se recalculan con el último peso registrado (el ayuno se respeta).
+function autoPlan() {
+  if (!S.profile || !S.goals || S.manual) return false;
+  const p = planNow(), before = S.goals.kcal;
+  for (const k of GOAL_KEYS) S.goals[k] = p[k];
+  S.goals.weeks = p.weeks; S.goals.targetDate = p.targetDate;
+  return S.goals.kcal !== before;
+}
+// Explica de dónde sale la meta de calorías.
+function planNote(p, prof, w) {
+  const act = (ACT.find((a) => a.id === prof.activity) || ACT[0]).name.toLowerCase();
+  let t = `Con ${fmt1(w)} kg y un estilo de vida ${act}, gastas unas ${fmt(p.tdee)} kcal al día. `;
+  if (p.mode === "mantener") t += prof.goal === "mantener" ? `Para mantener tu peso, tu meta es ${fmt(p.kcal)} kcal.` : `¡Ya llegaste a tu peso meta! Tu meta pasa a mantención: ${fmt(p.kcal)} kcal.`;
+  else t += `Para ${p.mode} ${String(prof.pace).replace(".", ",")} kg por semana, tu meta es ${fmt(p.kcal)} kcal${p.floored ? ` (no bajamos de ${fmt(p.kcal)} kcal por tu salud)` : ""}; llegarías a ${fmt1(prof.goalWeight)} kg cerca del ${longDate(p.targetDate)}.`;
+  return t;
 }
 function totals(k) {
   const d = getDay(k), t = { kcal: 0, c: 0, f: 0, p: 0, fi: 0, burned: 0 };
@@ -147,6 +173,12 @@ function checkChallenges() {
   if (won.length) toast(`🎉 ${won.map((c) => c.name).join(" · ")}  +${won.reduce((n, c) => n + c.coins, 0)} ฿`);
 }
 function rollover() { S.lastOpen = today(); }
+// Si cambió el día mientras la app estaba abierta o en segundo plano, vuelve a «hoy».
+function checkDay() {
+  if (!S.goals || !S.lastOpen || S.lastOpen === today()) return false;
+  rollover(); curDate = today(); autoPlan(); save(); render();
+  return true;
+}
 function commit() { checkChallenges(); save(); render(); }
 
 // ---------- mascota ----------
@@ -395,7 +427,7 @@ function viewHome() {
         <div><span>Proteínas</span>${bar(t.p, g.prot, "#3fae5c", "p")}<small>${fmt(t.p)} / ${g.prot} g</small></div>
       </div>
       ${foodsHtml || `<p class="empty">Aún no hay comidas registradas ${isToday ? "hoy" : "este día"}.</p>`}
-      <div class="foot">Meta: ${fmt(g.kcal)} kcal</div>
+      <div class="foot">Meta: ${fmt(g.kcal)} kcal${S.manual ? "" : ` · ${{ bajar: "para bajar", subir: "para subir", mantener: "para mantener" }[planNow().mode]}`}</div>
     </section>
 
     <section class="card">
@@ -445,9 +477,15 @@ function viewHome() {
     <section class="card">
       <div class="card-h"><span class="lbl">Peso</span><button class="ring-btn plain" data-act="addWeight" aria-label="Registrar peso">+</button></div>
       <div class="big">${fmt1(lastWeight())}<small> kg</small></div>
+      <p class="s">${weightWhen()}</p>
       <div class="foot">${weightFoot()}</div>
     </section>
   </main>`;
+}
+function weightWhen() {
+  const w = S.weights[S.weights.length - 1];
+  if (!w) return "";
+  return w.d === today() ? "Registrado hoy" : `Último registro: ${niceDate(w.d)} · toca + para anotar el de hoy`;
 }
 function weightFoot() {
   const w = lastWeight(), gw = S.profile.goalWeight, diff = r1(w - gw);
@@ -523,7 +561,7 @@ function viewStats() {
   const days = [6, 5, 4, 3, 2, 1, 0].map((i) => addDays(today(), -i));
   const kc = days.map((k) => totals(k).kcal), wa = days.map((k) => getDay(k).water), logged = kc.filter(Boolean);
   const avg = logged.length ? logged.reduce((a, b) => a + b, 0) / logged.length : 0;
-  const pts = S.weights.slice(-30), start = S.profile.weight, now = lastWeight();
+  const pts = S.weights.slice(-30), start = S.weights[0]?.kg ?? S.profile.weight, now = lastWeight();
   const fasts = S.fast.history.slice(-5).reverse();
   return `<header class="top"><h1>Progreso</h1><span class="chip">🔥 ${streak()} días</span></header>
   <main class="cards">
@@ -580,7 +618,7 @@ function viewOnboard() {
     body = `<h2>Tu plan está listo${ob.name ? ", " + esc(ob.name) : ""}</h2>
     ${p.targetDate ? `<p class="ok">✅ Alcanza tu meta para el ${longDate(p.targetDate)}</p>` : ""}
     <div class="plan"><h3>Recomendaciones nutricionales</h3><div class="big">🔥 ${fmt(p.kcal)} <small>kcal</small></div>
-      <div class="split"><i style="flex:48;background:#f5c043"></i><i style="flex:29;background:#3b82f6"></i><i style="flex:23;background:#3fae5c"></i></div>
+      <div class="split"><i style="flex:${p.carb * 4};background:#f5c043"></i><i style="flex:${p.fat * 9};background:#3b82f6"></i><i style="flex:${p.prot * 4};background:#3fae5c"></i></div>
       <div class="trio"><div><span class="dot" style="background:#f5c043"></span>Carboh.<b>${p.carb} g</b></div><div><span class="dot" style="background:#3b82f6"></span>Grasas<b>${p.fat} g</b></div><div><span class="dot" style="background:#3fae5c"></span>Proteínas<b>${p.prot} g</b></div></div></div>
     <div class="plan"><h3>Horario de ayuno</h3><div class="trio"><div>🌙 Ayuno<b>${p.fastH} h</b></div><div>🍴 Alimentación<b>${24 - p.fastH} h</b></div></div>
       <div class="split"><i style="flex:${p.fastH};background:#3b82f6"></i><i style="flex:${24 - p.fastH};background:#3fae5c"></i></div></div>
@@ -603,8 +641,10 @@ function obFinish() {
   if (ob.goal === "mantener") ob.goalWeight = ob.weight;
   const { step, ...p } = ob;
   const first = !S.profile;
-  S.profile = p; S.goals = calcPlan(p);
+  S.profile = p; S.goals = calcPlan(p); S.manual = false;
   if (first) { S.weights.push({ d: today(), kg: p.weight, init: true }); S.lastOpen = today(); S.coins += 15; }
+  // Al rehacer el cuestionario con otro peso, ese peso queda registrado hoy (si no, el plan seguiría con el anterior).
+  else if (Math.abs(p.weight - lastWeight()) >= 0.05) S.weights = [...S.weights.filter((w) => w.d !== today()), { d: today(), kg: r1(p.weight) }].sort((a, b) => (a.d < b.d ? -1 : 1));
   ob.step = 0; try { localStorage.removeItem(OB_KEY); } catch {}
   navigator.storage?.persist?.();
   view = "home"; enterNext = true; save(); render(); window.scrollTo(0, 0);
@@ -771,7 +811,7 @@ function sheetWater() {
     <div class="btn-row"><button class="btn ghost" data-act="water" data-ml="-250">− 250 ml</button><button class="btn" data-act="close">Listo</button></div>`);
 }
 function sheetWeight() {
-  sheet(`<h2>Registrar peso</h2>${field("w-kg", niceDate(curDate), lastWeight(), "kg", 'inputmode="decimal"')}
+  sheet(`<h2>Registrar peso</h2>${field("w-kg", curDate === today() ? `Peso de hoy (${niceDate(curDate)})` : `Peso del ${niceDate(curDate)}`, lastWeight(), "kg", 'inputmode="decimal"')}
     <button class="btn" data-act="saveWeight">Guardar</button>`);
 }
 function sheetWorkout() {
@@ -812,17 +852,27 @@ function sheetShop() {
     <div class="meal-h">Fondos</div>${SHOP.filter((x) => x.kind === "bg").map(row).join("")}
     <div class="meal-h">Compañeros</div>${SHOP.filter((x) => x.kind === "item").map(row).join("")}`, "tall");
 }
+const selField = (id, label, opts, v) => `<label class="field"><span>${label}</span><div><select id="${id}">${opts.map(([val, t]) => `<option value="${val}" ${String(val) === String(v) ? "selected" : ""}>${t}</option>`).join("")}</select></div></label>`;
 function sheetSettings() {
-  const g = S.goals;
+  const g = S.goals, pr = S.profile, ro = S.manual ? "" : " readonly";
   sheet(`<h2>Configuración</h2>
-    ${field("s-pet", "Nombre de la mascota", S.profile.petName, "", 'maxlength="16"')}
-    <div class="grid2">${field("s-kcal", "Meta de calorías", g.kcal, "kcal", 'inputmode="numeric"')}${field("s-water", "Meta de agua", g.water, "ml", 'inputmode="numeric"')}
-    ${field("s-carb", "Carbohidratos", g.carb, "g", 'inputmode="numeric"')}${field("s-fat", "Grasas", g.fat, "g", 'inputmode="numeric"')}
-    ${field("s-prot", "Proteínas", g.prot, "g", 'inputmode="numeric"')}${field("s-fiber", "Fibra", g.fiber, "g", 'inputmode="numeric"')}
-    ${field("s-burn", "Meta de quema", g.burn, "kcal", 'inputmode="numeric"')}${field("s-fast", "Horas de ayuno", g.fastH, "h", 'inputmode="numeric"')}
-    ${field("s-goalw", "Peso meta", S.profile.goalWeight, "kg", 'inputmode="decimal"')}</div>
+    ${field("s-pet", "Nombre de la mascota", pr.petName, "", 'maxlength="16"')}
+    <div class="meal-h">Tu objetivo</div>
+    ${selField("s-goal", "Objetivo", [["bajar", "Bajar de peso"], ["mantener", "Mantener mi peso"], ["subir", "Subir de peso"]], pr.goal)}
+    <div class="grid2" id="s-target">${field("s-goalw", "Peso meta", pr.goalWeight, "kg", 'inputmode="decimal"')}
+      ${selField("s-pace", "Ritmo por semana", [[0.25, "0,25 kg · suave"], [0.5, "0,5 kg · recomendado"], [0.75, "0,75 kg · exigente"]], pr.pace)}</div>
+    ${selField("s-act", "Actividad", ACT.map((x) => [x.id, x.name]), pr.activity)}
+    <div class="grid2">${field("s-age", "Edad", pr.age, "años", 'inputmode="numeric"')}${field("s-height", "Estatura", pr.height, "cm", 'inputmode="numeric"')}</div>
+    ${field("s-fast", "Horas de ayuno", g.fastH, "h", 'inputmode="numeric"')}
+    <div class="meal-h">Metas diarias</div>
+    <label class="check"><input type="checkbox" id="s-auto" ${S.manual ? "" : "checked"}><span>Calcularlas solas con mi peso y mi objetivo</span></label>
+    <p class="s plan-note" id="s-note"></p>
+    <div class="grid2 goals" id="s-goals">${field("s-kcal", "Calorías", g.kcal, "kcal", 'inputmode="numeric"' + ro)}${field("s-water", "Agua", g.water, "ml", 'inputmode="numeric"' + ro)}
+    ${field("s-carb", "Carbohidratos", g.carb, "g", 'inputmode="numeric"' + ro)}${field("s-fat", "Grasas", g.fat, "g", 'inputmode="numeric"' + ro)}
+    ${field("s-prot", "Proteínas", g.prot, "g", 'inputmode="numeric"' + ro)}${field("s-fiber", "Fibra", g.fiber, "g", 'inputmode="numeric"' + ro)}
+    ${field("s-burn", "Meta de quema", g.burn, "kcal", 'inputmode="numeric"' + ro)}</div>
     <button class="btn" data-act="saveSettings">Guardar</button>
-    <button class="btn ghost" data-act="replan">Recalcular mi plan desde cero</button>
+    <button class="btn ghost" data-act="replan">Rehacer el cuestionario inicial</button>
     <div class="meal-h">Respaldo de datos</div>
     <p class="s">Tus datos viven solo en este teléfono. Exporta un respaldo de vez en cuando.</p>
     <div class="btn-row"><button class="btn ghost" data-act="export">⬇️ Exportar</button><button class="btn ghost" data-act="import">⬆️ Importar</button></div>
@@ -831,6 +881,21 @@ function sheetSettings() {
     <button class="btn ghost" data-act="aiKey">${ai.key ? "Cambiar o quitar la clave" : "Conectar Gemini"}</button>
     <button class="btn danger" data-act="wipe">Borrar todos los datos</button>
     <p class="s center">Chopper Fit · proyecto personal de fan, sin fines comerciales.</p>`, "tall");
+  drawSettingsPlan();
+}
+
+function settingsProfile() {
+  const v = (id) => $(id)?.value, pr = S.profile;
+  return { ...pr, goal: v("#s-goal") || pr.goal, goalWeight: clamp(num(v("#s-goalw"), pr.goalWeight), 30, 300), pace: num(v("#s-pace"), pr.pace),
+    activity: v("#s-act") || pr.activity, age: clamp(r0(num(v("#s-age"), pr.age)), 12, 100), height: clamp(r0(num(v("#s-height"), pr.height)), 100, 230) };
+}
+function drawSettingsPlan() {
+  if (!$("#s-goals")) return;
+  const auto = $("#s-auto").checked, prof = settingsProfile(), p = calcPlan({ ...prof, weight: lastWeight() });
+  $("#s-target").hidden = prof.goal === "mantener";
+  $("#s-goals").classList.toggle("auto", auto);
+  for (const k of GOAL_KEYS) { const el = $("#s-" + k); el.readOnly = auto; if (auto) el.value = p[k]; }
+  $("#s-note").textContent = auto ? planNote(p, prof, lastWeight()) : "Metas fijadas a mano: no cambian cuando registras tu peso.";
 }
 
 // ---------- chat con Chopper (Gemini) ----------
@@ -1214,8 +1279,11 @@ const A = {
   },
   saveWeight: () => {
     const kg = num($("#w-kg").value); if (kg < 30 || kg > 300) return toast("Peso no válido");
+    if (checkDay()) return toast("Empezó un día nuevo: vuelve a anotar tu peso");
     S.weights = [...S.weights.filter((w) => w.d !== curDate), { d: curDate, kg: r1(kg) }].sort((a, b) => (a.d < b.d ? -1 : 1));
-    closeSheet(); commit(); toast("⚖️ Peso registrado");
+    const changed = autoPlan();
+    closeSheet(); commit();
+    toast(`⚖️ Peso ${curDate === today() ? "de hoy" : "del " + niceDate(curDate)} guardado: ${fmt1(kg)} kg${changed ? ` · tu meta ahora es ${fmt(S.goals.kcal)} kcal` : ""}`);
   },
   saveWorkout: () => {
     const kcal = num($("#wo-kcal").value); if (kcal <= 0) return toast("Ingresa las calorías");
@@ -1276,11 +1344,14 @@ const A = {
   },
   saveSettings: () => {
     const g = S.goals, v = (id, d, a, b) => clamp(r0(num($(id).value, d)), a, b);
-    S.profile.petName = $("#s-pet").value.trim() || "Chopper";
-    g.kcal = v("#s-kcal", g.kcal, 800, 6000); g.water = v("#s-water", g.water, 500, 6000); g.carb = v("#s-carb", g.carb, 0, 900); g.fat = v("#s-fat", g.fat, 0, 400);
-    g.prot = v("#s-prot", g.prot, 0, 500); g.fiber = v("#s-fiber", g.fiber, 0, 100); g.burn = v("#s-burn", g.burn, 0, 3000); g.fastH = v("#s-fast", g.fastH, 1, 23);
-    S.profile.goalWeight = clamp(num($("#s-goalw").value, S.profile.goalWeight), 30, 300);
-    closeSheet(); commit(); toast("Cambios guardados");
+    S.profile = { ...settingsProfile(), petName: $("#s-pet").value.trim() || "Chopper" };
+    g.fastH = S.profile.fastH = v("#s-fast", g.fastH, 1, 23);
+    S.manual = !$("#s-auto").checked;
+    if (S.manual) {
+      g.kcal = v("#s-kcal", g.kcal, 800, 6000); g.water = v("#s-water", g.water, 500, 6000); g.carb = v("#s-carb", g.carb, 0, 900); g.fat = v("#s-fat", g.fat, 0, 400);
+      g.prot = v("#s-prot", g.prot, 0, 500); g.fiber = v("#s-fiber", g.fiber, 0, 100); g.burn = v("#s-burn", g.burn, 0, 3000);
+    } else autoPlan();
+    closeSheet(); commit(); toast(`Cambios guardados · meta de ${fmt(g.kcal)} kcal`);
   },
   replan: () => { ob = { ...ob, ...S.profile, weight: lastWeight(), step: 1 }; S.goals = null; if (lockY != null) lockY = 0; closeSheet(); render(); window.scrollTo(0, 0); },
   export: () => {
@@ -1304,12 +1375,14 @@ document.addEventListener("input", (e) => {
   if (e.target.id === "f-g") drawPreview();
   if (e.target.id === "wo-min" || e.target.id === "wo-type") estWorkout();
   if (e.target.id === "chatq") growChat();
+  if (/^s-(goal|goalw|pace|act|age|height|auto)$/.test(e.target.id)) drawSettingsPlan();
 });
 document.addEventListener("submit", (e) => { if (e.target.id === "chatform") { e.preventDefault(); sendChat(); } });
 // Tocar «enviar» no debe cerrar el teclado.
 document.addEventListener("mousedown", (e) => { if (e.target.closest?.(".chat-send")) e.preventDefault(); });
 document.addEventListener("change", (e) => {
   if (e.target.id === "wo-type") estWorkout();
+  if (/^s-(goal|pace|act|auto)$/.test(e.target.id)) drawSettingsPlan();
   if (e.target.id === "chatfile" && e.target.files[0]) {
     prepImg(e.target.files[0]).then((img) => { chatImg = img; drawAtt(); $("#chatq")?.focus(); })
       .catch(() => toast("No se pudo leer la foto")).finally(() => { e.target.value = ""; });
@@ -1319,7 +1392,9 @@ document.addEventListener("change", (e) => {
     e.target.files[0].text().then((txt) => {
       const data = JSON.parse(txt);
       if (!data || typeof data !== "object" || !data.profile || !data.days) throw new Error("formato");
-      S = Object.assign(blank(), data); S.lastOpen = S.lastOpen || today(); save(); closeSheet(); enterNext = true; render(); toast("Respaldo importado");
+      S = Object.assign(blank(), data); S.lastOpen = S.lastOpen || today();
+      if (S.goals && S.manual === undefined) S.manual = !wasAutoPlan();
+      autoPlan(); save(); closeSheet(); enterNext = true; render(); toast("Respaldo importado");
     }).catch(() => toast("El archivo no es un respaldo válido")).finally(() => { e.target.value = ""; });
   }
 });
@@ -1330,7 +1405,20 @@ document.addEventListener("keydown", (e) => {
 });
 
 // ---------- arranque ----------
-if (S.profile && S.goals) { rollover(); checkChallenges(); save(); }
+// Las metas de versiones anteriores eran automáticas si calzan con la fórmula de entonces; si no, se fijaron a mano.
+function wasAutoPlan() {
+  const p = S.profile, g = S.goals, act = ACT.find((a) => a.id === p.activity) || ACT[0];
+  const tdee = (10 * p.weight + 6.25 * p.height - 5 * p.age + (p.sex === "m" ? 5 : -161)) * act.f;
+  const delta = p.goal === "mantener" ? 0 : (p.pace * 7700) / 7 * (p.goal === "bajar" ? -1 : 1);
+  const kcal = r0(Math.max(p.sex === "m" ? 1500 : 1200, tdee + delta));
+  const old = { kcal, carb: r0((kcal * 0.48) / 4), fat: r0((kcal * 0.29) / 9), prot: r0((kcal * 0.23) / 4), fiber: r0((kcal / 1000) * 14),
+    water: clamp(Math.round((p.weight * 27) / 250) * 250, 1500, 4000), burn: act.burn };
+  return GOAL_KEYS.every((k) => old[k] === g[k]);
+}
+if (S.profile && S.goals) {
+  if (S.manual === undefined) S.manual = !wasAutoPlan();
+  rollover(); autoPlan(); checkChallenges(); save();
+}
 render();
 greet();
 if (!S.profile) idbGet(KEY).then((json) => {
@@ -1341,6 +1429,8 @@ if (!S.profile) idbGet(KEY).then((json) => {
   } catch {}
 });
 navigator.storage?.persist?.();
+window.addEventListener("pageshow", checkDay);
+window.addEventListener("focus", checkDay);
 function tickFast() {
   if (!fasting()) return;
   const h = fastHours();
@@ -1349,14 +1439,14 @@ function tickFast() {
 }
 setInterval(() => {
   tickFast();
-  if (S.lastOpen && S.lastOpen !== today() && S.goals) { rollover(); curDate = today(); save(); render(); }
+  checkDay();
 }, 20000);
 // Al volver a la app después de un rato se repite el saludo (o la pantalla del ayuno).
 let hiddenAt = 0;
 document.addEventListener("visibilitychange", () => {
   if (document.hidden) { hiddenAt = Date.now(); return; }
   const away = hiddenAt && Date.now() - hiddenAt > 60000;
-  hiddenAt = 0; tickFast();
+  hiddenAt = 0; checkDay(); tickFast();
   if (away) greet();
 });
 if ("serviceWorker" in navigator && location.protocol === "https:") navigator.serviceWorker.register("sw.js");

@@ -189,7 +189,9 @@ small { font-weight: 500; }
 .field > div { display: flex; align-items: center; background: var(--soft); border-radius: 16px; padding: 0 16px; }
 .field input, .field select { flex: 1; min-width: 0; border: 0; background: none; outline: 0; padding: 15px 0; font-size: 18px; font-weight: 700; -webkit-appearance: none; appearance: none; }
 .field em { font-style: normal; color: var(--ink3); font-weight: 700; }
-.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0 10px; }
+.grid2 { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 0 10px; }
+.grid2 > * { min-width: 0; }
+.field select { width: 100%; text-overflow: ellipsis; }
 .search { position: sticky; top: 0; z-index: 2; box-shadow: 0 0 0 10px #fff; width: 100%; border: 0; outline: 0; background: var(--soft); border-radius: 16px; padding: 15px 16px; font-size: 17px; font-weight: 600; margin: 8px 0; -webkit-appearance: none; }
 .btn { display: block; width: 100%; background: var(--ink); color: #fff; border-radius: 999px; padding: 17px; font-weight: 700; font-size: 17px; margin-top: 12px; text-align: center; }
 .btn.ghost { background: var(--soft); color: var(--ink); }
@@ -369,3 +371,11 @@ button:active:not(:disabled) { transform: scale(.95); }
 .aierr { color: #c0392b; font-weight: 600; font-size: 14px; }
 .aikey .aisafe { margin-top: 16px; font-size: 13px; line-height: 1.4; }
 @media (prefers-reduced-motion: reduce) { .msg.new, .chat-card.new, .typing i { animation: none !important; } }
+
+/* ---- configuración: metas automáticas ---- */
+.check { display: flex; align-items: center; gap: 10px; margin: 10px 0 4px; font-weight: 600; font-size: 15px; cursor: pointer; }
+.check input { width: 22px; height: 22px; accent-color: var(--green-d); flex: none; margin: 0; }
+.plan-note { background: #eef7f0; color: #2c5e3b; border-radius: 14px; padding: 10px 12px; margin: 8px 0 2px; line-height: 1.4; }
+.plan-note:empty { display: none; }
+.goals.auto .field > div { background: #f8f9fa; }
+.goals.auto .field input { color: var(--ink2); }
