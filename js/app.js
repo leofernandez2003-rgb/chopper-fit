@@ -72,6 +72,7 @@ const ACT = [
 // Plan diario (Mifflin-St Jeor × actividad ± el déficit o superávit del ritmo elegido).
 // Al llegar al peso meta, el plan pasa solo a mantención.
 function calcPlan(p) {
+  p = { ...p, pace: [0.25, 0.5, 0.75].includes(+p.pace) ? +p.pace : 0.5 };
   const bmr = 10 * p.weight + 6.25 * p.height - 5 * p.age + (p.sex === "m" ? 5 : -161);
   const act = ACT.find((a) => a.id === p.activity) || ACT[0];
   const tdee = bmr * act.f;
@@ -105,7 +106,7 @@ function planNote(p, prof, w) {
   const act = (ACT.find((a) => a.id === prof.activity) || ACT[0]).name.toLowerCase();
   let t = `Con ${fmt1(w)} kg y un estilo de vida ${act}, gastas unas ${fmt(p.tdee)} kcal al día. `;
   if (p.mode === "mantener") t += prof.goal === "mantener" ? `Para mantener tu peso, tu meta es ${fmt(p.kcal)} kcal.` : `¡Ya llegaste a tu peso meta! Tu meta pasa a mantención: ${fmt(p.kcal)} kcal.`;
-  else t += `Para ${p.mode} ${String(prof.pace).replace(".", ",")} kg por semana, tu meta es ${fmt(p.kcal)} kcal${p.floored ? ` (no bajamos de ${fmt(p.kcal)} kcal por tu salud)` : ""}; llegarías a ${fmt1(prof.goalWeight)} kg cerca del ${longDate(p.targetDate)}.`;
+  else t += `Para ${p.mode} ${String(prof.pace).replace(".", ",")} kg por semana, tu meta es ${fmt(p.kcal)} kcal${p.floored ? ` (no bajamos de ${fmt(p.kcal)} kcal por tu salud)` : ""}${p.targetDate ? `; llegarías a ${fmt1(prof.goalWeight)} kg cerca del ${longDate(p.targetDate)}` : ""}.`;
   return t;
 }
 function totals(k) {
@@ -333,15 +334,31 @@ function sheet(html, cls = "") {
   box.innerHTML = `<div class="sheet-bg" data-act="close"></div><div class="sheet ${cls}" role="dialog" aria-modal="true"><div class="grab"></div>${html}</div>`;
   box.classList.toggle("noanim", again && cls !== "full");
   box.classList.add("open");
-  lockScroll();
+  lockScroll(); fitSheet();
 }
+// iPhone: al abrir el teclado, iOS corre la pantalla y los botones de las hojas quedaban tapados o no respondían
+// al tocarlos (por ejemplo «Guardar» después de escribir un peso). La capa de hojas sigue al área visible.
+function fitSheet() {
+  const box = $("#sheet"), vv = window.visualViewport;
+  if (!vv || !box.classList.contains("open")) { box.style.top = box.style.height = box.style.bottom = ""; box.classList.remove("kb"); return; }
+  Object.assign(box.style, { top: vv.offsetTop + "px", height: vv.height + "px", bottom: "auto" });
+  box.classList.toggle("kb", window.innerHeight - vv.height > 120);
+}
+window.visualViewport?.addEventListener("resize", () => { fitSheet(); if ($("#chatlist")) $("#chatlist").scrollTop = $("#chatlist").scrollHeight; });
+window.visualViewport?.addEventListener("scroll", fitSheet);
+// Al cerrar el teclado, iOS puede dejar la página corrida bajo la hoja: se devuelve a su lugar.
+document.addEventListener("focusout", () => setTimeout(() => {
+  if (document.activeElement?.matches?.("input, textarea, select")) return; // pasó a otro campo
+  if (lockY != null && window.scrollY) window.scrollTo(0, 0);
+  fitSheet();
+}, 60));
 function closeSheet() {
   const box = $("#sheet");
   stopScan(); clearTimeout(onlineTimer); onlineCtl?.abort();
   if (!box.classList.contains("open")) return;
   clearTimeout(closeTimer);
   box.classList.remove("noanim"); box.classList.add("closing");
-  closeTimer = setTimeout(() => { box.classList.remove("open", "closing"); box.innerHTML = ""; unlockScroll(); }, reduced ? 0 : 230);
+  closeTimer = setTimeout(() => { box.classList.remove("open", "closing"); box.innerHTML = ""; unlockScroll(); fitSheet(); }, reduced ? 0 : 230);
 }
 // Congela el fondo mientras hay una hoja abierta (en iOS el fondo se desplazaba detrás).
 let lockY = null;
@@ -1104,15 +1121,7 @@ function growChat() {
   const q = $("#chatq"); if (!q) return;
   q.style.height = "auto"; q.style.height = Math.min(q.scrollHeight, 120) + "px";
 }
-// En iOS el teclado tapa la parte de abajo: el chat se ajusta al área visible.
-function fitChat() {
-  const el = $(".sheet.chat"), vv = window.visualViewport; if (!el || !vv) return;
-  Object.assign(el.style, { top: vv.offsetTop + "px", bottom: "auto", height: vv.height + "px" });
-  el.classList.toggle("kb", window.innerHeight - vv.height > 120);
-  const box = $("#chatlist"); if (box) box.scrollTop = box.scrollHeight;
-}
-window.visualViewport?.addEventListener("resize", fitChat);
-window.visualViewport?.addEventListener("scroll", fitChat);
+function fitChat() { fitSheet(); const box = $("#chatlist"); if (box) box.scrollTop = box.scrollHeight; }
 // La foto se achica antes de enviarla (máx. 1024 px) y se guarda una miniatura para el historial.
 async function prepImg(file) {
   const url = URL.createObjectURL(file);
@@ -1368,8 +1377,11 @@ const A = {
 };
 document.addEventListener("click", (e) => {
   const el = e.target.closest("[data-act]"); if (!el || el.disabled) return;
-  const fn = A[el.dataset.act]; if (fn) fn(el);
+  const fn = A[el.dataset.act]; if (!fn) return;
+  // Si algo falla, se avisa en pantalla en vez de quedar «sin pasar nada».
+  try { const r = fn(el); r?.catch?.(actionError); } catch (err) { actionError(err); }
 });
+function actionError(err) { console.error(err); toast(`⚠️ Algo falló: ${err?.message || err}`); }
 document.addEventListener("input", (e) => {
   if (e.target.id === "q") { drawResults(); queueOnline(); }
   if (e.target.id === "f-g") drawPreview();
