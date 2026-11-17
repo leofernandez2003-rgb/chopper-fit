@@ -1,9 +1,9 @@
 // Service worker: deja la app disponible sin conexión.
 // Sube el número de versión en cada publicación para refrescar la caché.
-const CACHE = "chopperfit-v5";
+const CACHE = "chopperfit-v6";
 const SHELL = ["./", "index.html", "css/style.css", "js/data.js", "js/app.js", "manifest.webmanifest",
   "assets/chopper.png", "assets/icon-192.png", "assets/fondos/bg-prado.jpg",
-  ...["happy", "eat", "party", "sleep", "sad"].map((m) => `assets/chopper/${m}.webp`)];
+  ...["rest", "nap", "sleep", "happy", "eat", "party", "sad", "lie"].map((m) => `assets/chopper/${m}.webp`)];
 
 self.addEventListener("install", (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));

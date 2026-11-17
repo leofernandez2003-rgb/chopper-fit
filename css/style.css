@@ -27,47 +27,29 @@ small { font-weight: 500; }
 .scene::after { content: ""; position: absolute; inset: auto 0 0 0; height: 150px; background: linear-gradient(transparent, var(--green)); pointer-events: none; }
 .scene-top { display: flex; justify-content: space-between; align-items: flex-start; position: relative; z-index: 2; }
 .scene h1, .top h1 { font-size: 30px; font-weight: 800; color: #fff; letter-spacing: -.5px; text-shadow: 0 2px 8px rgba(0,0,0,.35); }
-.hearts { font-size: 18px; letter-spacing: 2px; filter: drop-shadow(0 1px 2px rgba(0,0,0,.3)); }
 .icon-btn { font-size: 26px; filter: drop-shadow(0 1px 3px rgba(0,0,0,.4)); width: 44px; height: 44px; }
-.bubble { position: absolute; z-index: 2; top: calc(96px + var(--sat)); left: 16px; max-width: 46%; background: #fff; border-radius: 16px 16px 16px 4px; padding: 9px 12px; font-size: 13.5px; font-weight: 600; box-shadow: 0 4px 14px rgba(0,0,0,.18); }
-.pet { position: absolute; z-index: 1; left: 50%; bottom: 62px; width: 205px; margin-left: -72px; cursor: pointer; transform-origin: 50% 100%; }
+/* Chopper al centro. Con los WebP (lienzo 576×704, Chopper de 389 px) la caja crece para que se vea del mismo tamaño
+   que la imagen fija de respaldo (205 px). Los pies quedan al 92 % del alto del lienzo. */
+.pet { position: absolute; z-index: 1; left: 50%; bottom: 62px; width: 205px; margin-left: -102px; cursor: pointer; }
 .pet img { width: 100%; display: block; filter: drop-shadow(0 10px 8px rgba(0,0,0,.28)); user-select: none; -webkit-user-drag: none; }
-.pet .fx { position: absolute; top: -4px; right: -8px; font-size: 34px; animation: float 1.8s ease-in-out infinite; }
 .pet .buddy { position: absolute; bottom: 4px; left: -42px; font-size: 44px; filter: drop-shadow(0 4px 4px rgba(0,0,0,.3)); }
-.pet { will-change: transform; }
-.pet.happy { animation: bob 2.8s cubic-bezier(.45,0,.55,1) infinite; }
-.pet.eat { animation: munch .5s cubic-bezier(.45,0,.55,1) infinite; }
-.pet.party { animation: jump .9s infinite; }
-.pet.sleep { animation: breathe 4.2s cubic-bezier(.45,0,.55,1) infinite; }
-.pet.sleep img { filter: brightness(.82) saturate(.8) drop-shadow(0 10px 8px rgba(0,0,0,.28)); }
-.pet.sad { animation: droop 3.6s cubic-bezier(.45,0,.55,1) infinite; }
-.pet.sad img { filter: saturate(.55) drop-shadow(0 10px 8px rgba(0,0,0,.28)); }
-.pet-shadow { position: absolute; z-index: 0; left: 50%; bottom: 52px; width: 130px; height: 22px; margin-left: -30px; border-radius: 50%; background: rgba(0,0,0,.2); filter: blur(5px); will-change: transform, opacity; }
-.pet-shadow.happy { animation: shadow-bob 2.8s cubic-bezier(.45,0,.55,1) infinite; }
-.pet-shadow.party { animation: shadow-jump .9s infinite; }
-/* Clips animados (assets/chopper/*.webp, lienzo 576×704 con Chopper de 389 px de ancho).
-   La caja se agranda para que Chopper conserve su tamaño (205 px) y su posición de siempre;
-   el movimiento ya viene en el clip, así que se apagan el balanceo y los filtros por ánimo. */
-.pet.clip { width: 304px; margin-left: -121px; bottom: 33px; animation: none; }
-.pet.clip img { filter: drop-shadow(0 10px 8px rgba(0,0,0,.28)); }
-.pet.clip .fx { top: 60px; right: 42px; }
+.pet.clip { width: 304px; margin-left: -152px; bottom: 33px; }
 .pet.clip .buddy { bottom: 34px; left: 7px; }
-.pet-shadow.clip { animation: none; }
+.pet.sleep .buddy { left: -14px; }
+/* En reposo solo respira suave; las reacciones ya traen su movimiento. */
+.pet.rest:not(.playing) img { animation: idle 3.4s ease-in-out infinite; transform-origin: 50% 92%; }
+@keyframes idle { 50% { transform: scale(1.012, .988); } }
+.pet-shadow { position: absolute; z-index: 0; left: 50%; bottom: 52px; width: 130px; height: 22px; margin-left: -65px; border-radius: 50%; background: rgba(0,0,0,.2); filter: blur(5px); }
+.pet-shadow.sleep { width: 250px; margin-left: -125px; }
 @keyframes bob { 0%, 100% { transform: translate3d(0,0,0) rotate(-1deg); } 50% { transform: translate3d(0,-9px,0) rotate(1.5deg); } }
-@keyframes shadow-bob { 0%, 100% { transform: scale(1); opacity: 1; } 50% { transform: scale(.9); opacity: .75; } }
-@keyframes munch { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.05, .94); } }
-@keyframes jump {
-  0%, 100% { transform: translate3d(0,0,0) scale(1.06, .92); animation-timing-function: cubic-bezier(.2,.7,.3,1); }
-  18% { transform: translate3d(0,-6px,0) scale(.96, 1.05); }
-  50% { transform: translate3d(0,-40px,0) rotate(-5deg) scale(1); animation-timing-function: cubic-bezier(.6,0,.9,.4); }
-}
-@keyframes shadow-jump { 0%, 100% { transform: scale(1.05); opacity: 1; } 50% { transform: scale(.65); opacity: .45; } }
-@keyframes breathe { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.025, .972); } }
-@keyframes droop { 0%, 100% { transform: rotate(-4deg); } 50% { transform: rotate(-7deg) translate3d(0,3px,0); } }
-@keyframes float { 0%, 100% { transform: translate3d(0,0,0); opacity: 1; } 50% { transform: translate3d(0,-10px,0); opacity: .65; } }
-.bubble { animation: pop-in .4s cubic-bezier(.2,.9,.3,1.2) backwards; transform-origin: 0 100%; }
-#app:not(.enter) .bubble { animation: none; }
-@keyframes pop-in { from { transform: scale(.6); opacity: 0; } }
+/* Letras «z» que suben mientras Chopper duerme. */
+.zz { position: absolute; z-index: 2; pointer-events: none; }
+.zz i { position: absolute; left: 0; bottom: 0; font-style: normal; font-weight: 800; color: #fff; text-shadow: 0 1px 4px rgba(0,0,0,.35); opacity: 0; animation: zz 3.6s ease-out infinite; }
+.zz i:nth-child(1) { font-size: 16px; }
+.zz i:nth-child(2) { font-size: 21px; animation-delay: 1.2s; }
+.zz i:nth-child(3) { font-size: 27px; animation-delay: 2.4s; }
+@keyframes zz { 0% { transform: translate3d(0,0,0) rotate(-8deg); opacity: 0; } 15% { opacity: 1; } 100% { transform: translate3d(26px,-64px,0) rotate(12deg); opacity: 0; } }
+.pet .zz { left: 178px; top: 108px; }
 .scene-bar { position: absolute; z-index: 3; left: 18px; right: 18px; bottom: 12px; display: flex; justify-content: space-between; align-items: center; }
 .datenav { display: flex; align-items: center; gap: 2px; color: #fff; font-weight: 800; font-size: 18px; }
 .datenav button { min-width: 34px; height: 40px; font-size: 24px; font-weight: 800; }
@@ -117,6 +99,11 @@ small { font-weight: 500; }
 .recipe { display: flex; align-items: center; gap: 14px; width: 100%; text-align: left; padding: 10px 0; }
 .recipe + .recipe { border-top: 1px solid var(--line); }
 .recipe img { width: 58px; height: 58px; border-radius: 50%; object-fit: cover; background: var(--soft); flex: none; }
+.recipe.wide { align-items: flex-start; padding: 14px 0; }
+.recipe.wide img { width: 84px; height: 84px; border-radius: 20px; }
+.recipe .kind { font-size: 12px; font-weight: 700; color: var(--ink3); text-transform: uppercase; letter-spacing: .3px; margin-bottom: 2px; }
+.recipe .ing { font-size: 13px; color: var(--ink2); margin-top: 4px; line-height: 1.35; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.card-h .link { font-size: 14px; padding: 2px 0; }
 
 .glasses { display: grid; grid-template-columns: repeat(7, 1fr); gap: 10px 8px; }
 .glass { height: 48px; background: #e8effd; color: var(--ink); font-size: 20px; font-weight: 600; clip-path: polygon(0 0, 100% 0, 84% 100%, 16% 100%); border-radius: 4px; transition: background .25s; }
@@ -230,7 +217,7 @@ small { font-weight: 500; }
 .ob-body > p { color: var(--ink2); margin-bottom: 14px; }
 .ob-body .field > div { background: #fff; }
 .ob-pet { display: block; width: 170px; margin: 0 auto 18px; animation: bob 2.6s ease-in-out infinite; filter: drop-shadow(0 10px 8px rgba(0,0,0,.2)); }
-.ob-pet.clip { width: 252px; margin: -48px auto -6px; animation: none; }
+.ob-pet.clip { width: 252px; margin: -48px auto -6px; animation: idle 3.4s ease-in-out infinite; transform-origin: 50% 92%; }
 .opts { display: grid; gap: 10px; margin: 14px 0; }
 .opts.two { grid-template-columns: 1fr 1fr; } .opts.three { grid-template-columns: repeat(3, 1fr); }
 .opt { background: #fff; border-radius: 18px; padding: 16px; text-align: left; border: 2px solid transparent; }
@@ -251,7 +238,11 @@ small { font-weight: 500; }
 .toast { background: var(--ink); color: #fff; padding: 11px 18px; border-radius: 999px; font-weight: 600; font-size: 14px; max-width: 90%; text-align: center; box-shadow: 0 6px 20px rgba(0,0,0,.3); animation: toast 3.6s both; }
 @keyframes toast { 0% { transform: translateY(-20px); opacity: 0; } 8%, 88% { transform: none; opacity: 1; } 100% { opacity: 0; } }
 #datepick { position: fixed; top: 0; left: 0; opacity: 0; pointer-events: none; width: 1px; height: 1px; }
-@media (prefers-reduced-motion: reduce) { .pet, .pet .fx, .ob-pet { animation: none !important; } }
+@media (prefers-reduced-motion: reduce) {
+  .pet img, .ob-pet { animation: none !important; }
+  .zz i { animation: none !important; opacity: .85; }
+  .zz i:nth-child(2) { transform: translate3d(12px,-20px,0); } .zz i:nth-child(3) { transform: translate3d(26px,-44px,0); }
+}
 .link { color: var(--green-d); font-weight: 700; text-decoration: underline; }
 .spin { display: inline-block; width: 14px; height: 14px; border: 2px solid #d5d8dc; border-top-color: var(--ink2); border-radius: 50%; vertical-align: -2px; margin-right: 4px; animation: spin .7s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
@@ -262,7 +253,6 @@ small { font-weight: 500; }
 #app.enter .cards > :nth-child(1) { animation-delay: .04s; } #app.enter .cards > :nth-child(2) { animation-delay: .09s; }
 #app.enter .cards > :nth-child(3) { animation-delay: .14s; } #app.enter .cards > :nth-child(4) { animation-delay: .19s; }
 #app.enter .cards > :nth-child(n+5) { animation-delay: .24s; }
-#app.enter .pet { animation-name: none; }
 #app.enter .pet img { animation: pet-in .6s cubic-bezier(.2,.9,.3,1.25) backwards; }
 @keyframes pet-in { from { transform: translate3d(0,40px,0) scale(.7); opacity: 0; } }
 .cards.slide-l { animation: slide-l .32s cubic-bezier(.2,.8,.2,1); } .cards.slide-r { animation: slide-r .32s cubic-bezier(.2,.8,.2,1); }
@@ -307,3 +297,24 @@ button:active:not(:disabled) { transform: scale(.95); }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; } }
 .warn { background: #fff7e0; border: 1px solid #f3d98a; color: #6b5310; border-radius: 18px; padding: 12px 14px; font-size: 14px; line-height: 1.35; margin: 4px 0 12px; }
 .cards > .warn { margin: 0; border-radius: 22px; }
+
+/* Pantalla del ayuno: se abre al entrar a la app con un ayuno en curso. */
+.sheet.full.fast { background: #eeedf3; color: var(--ink); overflow-y: auto; }
+.fastscreen { min-height: 100%; display: flex; flex-direction: column; align-items: center; text-align: center; padding: calc(14px + var(--sat)) 24px calc(22px + var(--sab)); }
+.fast-x { align-self: flex-start; width: 46px; height: 46px; border-radius: 50%; background: #dddce4; color: var(--ink); font-size: 17px; font-weight: 700; }
+.fast-pet { position: relative; width: 310px; max-width: 82vw; margin-top: auto; margin-bottom: -6px; }
+.fast-pet::before { content: ""; position: absolute; left: 13%; right: 13%; bottom: 5.5%; height: 18px; border-radius: 50%; background: rgba(40,36,70,.1); }
+.fast-pet img { position: relative; width: 100%; display: block; }
+.fast-pet .zz { left: 60%; top: 28%; }
+.fastscreen .zz i { color: #aeaac6; text-shadow: none; }
+.fastscreen .zz i:nth-child(1) { font-size: 20px; } .fastscreen .zz i:nth-child(2) { font-size: 27px; } .fastscreen .zz i:nth-child(3) { font-size: 34px; }
+.fast-time { font-size: 64px; font-weight: 900; letter-spacing: -2px; line-height: 1; }
+.fast-msg { color: var(--ink3); font-size: 16px; font-weight: 600; line-height: 1.4; max-width: 340px; margin: 14px auto 0; }
+.fast-when { display: flex; width: 100%; max-width: 360px; margin: 26px auto 0; }
+.fast-when > div { flex: 1; }
+.fast-when > div + div { border-left: 2px solid #dcdbe3; }
+.fast-when span { display: block; color: var(--ink3); font-size: 14px; font-weight: 600; }
+.fast-when b { font-size: 18px; font-weight: 800; }
+.fast-actions { width: 100%; max-width: 360px; margin-top: auto; padding-top: 30px; }
+.btn.warm { background: #ff7f66; }
+.btn.plain { background: none; color: var(--ink); margin-top: 4px; }

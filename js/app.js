@@ -27,11 +27,12 @@ const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 
 const KEY = "chopperfit.v1";
 const blank = () => ({
   v: 1, profile: null, goals: null, days: {}, weights: [], fast: { start: null, history: [] },
-  coins: 0, hearts: 4, lastOpen: null, owned: ["bg-prado"], bg: "bg-prado", item: null,
+  coins: 0, lastOpen: null, owned: ["bg-prado"], bg: "bg-prado", item: null,
   myFoods: [], recent: [], weekClaimed: {}, kcalMode: "consumidas",
 });
 let S;
 try { S = Object.assign(blank(), JSON.parse(localStorage.getItem(KEY) || "{}")); } catch { S = blank(); }
+delete S.hearts; // las vidas se quitaron
 // ¿El navegador deja guardar? (en navegación privada o en navegadores dentro de otras apps puede que no)
 let canStore = true;
 try { localStorage.setItem(KEY + ".t", "1"); canStore = localStorage.getItem(KEY + ".t") === "1"; localStorage.removeItem(KEY + ".t"); } catch { canStore = false; }
@@ -51,7 +52,6 @@ const save = () => {
 
 let view = "home";
 let curDate = today();
-let eating = 0; // marca de tiempo de la última comida registrada (animación)
 let statSel = {}; // barra seleccionada por gráfico
 let enterNext = true; // el próximo render anima la entrada de las tarjetas
 let enterTimer = 0;
@@ -146,61 +146,105 @@ function checkChallenges() {
   for (const ch of WEEKLY) if (!wc.includes(ch.id) && isDone(ch, k)) { (S.weekClaimed[wk] = S.weekClaimed[wk] || []).push(ch.id); S.coins += ch.coins; won.push(ch); }
   if (won.length) toast(`🎉 ${won.map((c) => c.name).join(" · ")}  +${won.reduce((n, c) => n + c.coins, 0)} ฿`);
 }
-function rollover() {
-  const t = today();
-  if (S.lastOpen && S.lastOpen < t && S.goals) {
-    let lost = 0;
-    for (let k = S.lastOpen; k < t; k = addDays(k, 1)) if (!getDay(k).foods.length) lost++;
-    S.hearts = Math.max(0, S.hearts - lost);
-  }
-  S.lastOpen = t;
-}
+function rollover() { S.lastOpen = today(); }
 function commit() { checkChallenges(); save(); render(); }
 
 // ---------- mascota ----------
-// Duración de cada animación; el desfase negativo evita que se reinicie en cada render.
-const PET_MS = { happy: 2800, eat: 500, party: 900, sleep: 4200, sad: 3600 };
-// Animaciones dibujadas de Chopper (WebP con transparencia), una por estado de ánimo.
-const PET_MOODS = ["happy", "eat", "party", "sleep", "sad"];
-const petSrc = (id) => (reduced ? "assets/chopper.png" : `assets/chopper/${id}.webp`);
-// Una sola <img> que sobrevive a los render: así la animación no vuelve al primer cuadro cada vez.
+// Chopper descansa quieto y reacciona con clips cortos (WebP con transparencia) que se ven una vez:
+// saluda al abrir la app, come al registrar, celebra la meta, llora si se pasa y se acuesta al empezar un ayuno.
+// En ayuno duerme acostado. Todos los WebP comparten el mismo lienzo, así que solo cambia la imagen.
+const PET_FRAME = 62; // ms por cuadro de los clips
+const PET_CLIPS = { happy: 48, eat: 32, party: 48, sad: 48, lie: 40 }; // cuadros de cada reacción
+const petFile = (id) => `assets/chopper/${id}.webp`;
+const ZZ = `<span class="zz" aria-hidden="true"><i>z</i><i>z</i><i>z</i></span>`;
+// Una sola <img> que sobrevive a los render: así una reacción no se corta ni vuelve al inicio al redibujar.
 const petImg = Object.assign(new Image(), { alt: "Chopper", draggable: false, decoding: "async" });
-let petMood = "happy", petFailed = false;
-// Con el clip animado sobran el balanceo y los filtros del CSS; con la imagen fija se mantienen.
-function syncPetClip() {
-  const on = !petFailed && /\.webp$/.test(petImg.getAttribute("src") || "");
-  petImg.classList.toggle("clip", on);
-  petImg.closest(".pet")?.classList.toggle("clip", on);
-  $("#app .pet-shadow")?.classList.toggle("clip", on);
+let petFailed = false, petPlaying = null, petToken = 0;
+const fasting = () => !!(S.goals && S.fast.start);
+// Reposo: de pie, o durmiendo si hay ayuno (quieto si el sistema pide menos movimiento).
+const petBase = () => (petFailed ? "assets/chopper.png" : petFile(fasting() ? (reduced ? "nap" : "sleep") : "rest"));
+function syncPet() {
+  const pet = petImg.closest(".pet");
+  petImg.classList.toggle("clip", !petFailed);
+  pet?.classList.toggle("clip", !petFailed);
+  pet?.classList.toggle("playing", !!petPlaying);
+  $("#app .pet-shadow")?.classList.toggle("clip", !petFailed);
 }
+function setPetSrc(src) { if (petImg.getAttribute("src") !== src) petImg.setAttribute("src", src); syncPet(); }
 petImg.onerror = () => {
-  if (petImg.getAttribute("src") === "assets/chopper.png") return;
-  petFailed = true; petImg.setAttribute("src", "assets/chopper.png"); syncPetClip();
+  if (petPlaying || petImg.getAttribute("src") === "assets/chopper.png") return;
+  petFailed = true; setPetSrc("assets/chopper.png");
 };
 function mountPet() {
   const slot = $("#app img[data-pet]");
   if (!slot) return;
-  const src = petFailed ? "assets/chopper.png" : petSrc(petMood);
-  if (petImg.getAttribute("src") !== src) petImg.setAttribute("src", src);
   petImg.className = slot.className;
   slot.replaceWith(petImg);
-  syncPetClip();
+  if (petPlaying) syncPet(); else setPetSrc(petBase());
+}
+const petBlobs = {};
+function petBlob(id) {
+  petBlobs[id] ??= fetch(petFile(id)).then((r) => (r.ok ? r.blob() : null)).catch(() => null)
+    .then((b) => { if (!b) delete petBlobs[id]; return b; });
+  return petBlobs[id];
+}
+const wait = (ms) => new Promise((ok) => setTimeout(ok, ms));
+// Reproduce una reacción (`times` veces seguidas) y vuelve al reposo. Una reacción nueva corta la anterior.
+// Devuelve true si terminó sin que otra la interrumpiera.
+async function playPet(id, times = 1) {
+  if (reduced || petFailed || !PET_CLIPS[id]) return false;
+  const my = ++petToken;
+  const blob = await petBlob(id);
+  if (!blob || my !== petToken) return false;
+  // Cada reproducción usa su propia URL: así el clip parte siempre desde el primer cuadro.
+  // (No se predecodifica en otra <img>: Chrome comparte la imagen y la deja congelada en el primer cuadro.)
+  const url = URL.createObjectURL(blob);
+  petPlaying = id; setPetSrc(url);
+  await wait(PET_CLIPS[id] * PET_FRAME * times);
+  const last = my === petToken;
+  if (last) { petPlaying = null; setPetSrc(petBase()); }
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  return last;
 }
 let petsLoaded = false;
 function preloadPets() {
   if (petsLoaded || reduced) return;
   petsLoaded = true;
-  setTimeout(() => PET_MOODS.forEach((id) => { new Image().src = petSrc(id); }), 1200);
+  setTimeout(() => {
+    ["happy", "eat", "party", "sad", "lie"].forEach(petBlob);
+    new Image().src = petFile(fasting() ? "rest" : "sleep");
+  }, 1500);
 }
-function mood() {
-  const t = totals(today()), g = S.goals.kcal;
-  if (Date.now() - eating < 3500) return { id: "eat", fx: "🍴", msg: "¡Ñam! Anotado." };
-  if (S.fast.start) return { id: "sleep", fx: "💤", msg: `Ayunando… llevamos ${hm(fastHours())}` };
-  if (S.hearts === 0) return { id: "sad", fx: "💧", msg: "Te extrañé… ¿me das un algodón de azúcar?" };
-  if (t.kcal > g * 1.15) return { id: "sad", fx: "💦", msg: "¡Nos pasamos hoy! Mañana lo compensamos." };
-  if (inRange(today())) return { id: "party", fx: "✨", msg: "¡Meta cumplida! Eso no me hace feliz, tonto~ 🩷" };
-  if (!getDay(today()).foods.length) return { id: "happy", fx: "", msg: "¿Qué comimos hoy? ¡Cuéntame!" };
-  return { id: "happy", fx: "", msg: `Vamos bien: quedan ${fmt(Math.max(0, g - t.kcal))} kcal.` };
+// Al abrir (o volver a) la app: con ayuno en curso se muestra su pantalla; si no, Chopper saluda.
+function greet() {
+  if (!S.goals) return void setTimeout(() => playPet("happy"), 900);
+  if (fasting()) { if (!$("#sheet").classList.contains("open")) sheetFast(); return; }
+  if (view === "home") setTimeout(() => playPet("happy"), 900);
+}
+
+// ---------- pantalla de ayuno ----------
+const whenFmt = (ts) => { const d = new Date(ts); return `${DOW[d.getDay()].toLowerCase()}, ${pad(d.getHours())}:${pad(d.getMinutes())}`; };
+function fastMsg(h, goal) {
+  if (h >= goal) return `¡Cumpliste tu meta de ${goal} h! Puedes terminar el ayuno cuando quieras.`;
+  const stage = h < 4 ? "Tu cuerpo todavía está usando la energía de tu última comida."
+    : h < 8 ? "El azúcar en la sangre empieza a bajar y a estabilizarse."
+    : h < 12 ? "Tu cuerpo está empezando a usar sus reservas."
+    : "Tu cuerpo ya está quemando grasa. ¡Vas muy bien!";
+  return `${stage} Faltan ${hm(goal - h)} para tu meta de ${goal} h.`;
+}
+function sheetFast() {
+  if (!fasting()) return;
+  const h = fastHours(), goal = S.goals.fastH, done = h >= goal;
+  sheet(`<div class="fastscreen">
+    <button class="fast-x" data-act="close" aria-label="Cerrar">✕</button>
+    <div class="fast-pet">${ZZ}<img src="${petFailed ? "assets/chopper.png" : petFile(reduced ? "nap" : "sleep")}" alt="Chopper durmiendo"></div>
+    <div class="fast-time" id="fastbig">${hm(h)}</div>
+    <p class="fast-msg" id="fastmsg">${fastMsg(h, goal)}</p>
+    <div class="fast-when"><div><span>Iniciado</span><b>${whenFmt(S.fast.start)}</b></div><div><span>Meta</span><b>${whenFmt(S.fast.start + goal * 36e5)}</b></div></div>
+    <div class="fast-actions">
+      <button class="btn ${done ? "" : "warm"}" data-act="endFast">${done ? "Terminar ayuno" : "Terminar ayuno ahora"}</button>
+      <button class="btn plain" data-act="close">Seguir ayunando</button>
+    </div></div>`, "full fast");
 }
 
 // ---------- componentes ----------
@@ -284,7 +328,7 @@ function unlockScroll() {
 // ---------- vistas ----------
 function render() {
   const app = $("#app");
-  if (!S.profile || !S.goals) { petMood = "happy"; app.innerHTML = viewOnboard(); mountPet(); $("#nav").hidden = true; return; }
+  if (!S.profile || !S.goals) { app.innerHTML = viewOnboard(); mountPet(); $("#nav").hidden = true; return; }
   $("#nav").hidden = false;
   document.querySelectorAll("#nav [data-view]").forEach((b) => b.classList.toggle("on", b.dataset.view === view));
   const y = window.scrollY;
@@ -301,8 +345,7 @@ function render() {
 }
 
 function viewHome() {
-  const k = curDate, d = getDay(k), t = totals(k), g = S.goals, m = mood(), isToday = k === today();
-  petMood = m.id;
+  const k = curDate, d = getDay(k), t = totals(k), g = S.goals, isToday = k === today(), pose = fasting() ? "sleep" : "rest";
   const item = SHOP.find((x) => x.id === S.item);
   const mode = S.kcalMode, left = g.kcal - t.kcal;
   const big = cnt(mode === "consumidas" ? t.kcal : Math.abs(left), "kcal-" + mode);
@@ -322,14 +365,13 @@ function viewHome() {
   return `
   <header class="scene" style="background-image:url(assets/fondos/${esc(S.bg)}.jpg)">
     <div class="scene-top">
-      <div><h1>${esc(S.profile.petName)}</h1><div class="hearts" aria-label="${S.hearts} de 4 corazones">${"❤️".repeat(S.hearts)}${"🤍".repeat(4 - S.hearts)}</div></div>
+      <h1>${esc(S.profile.petName)}</h1>
       <button class="icon-btn" data-act="settings" aria-label="Configuración">⚙️</button>
     </div>
-    <div class="bubble">${esc(m.msg)}</div>
-    <div class="pet-shadow ${m.id}" style="animation-delay:-${Date.now() % PET_MS[m.id]}ms"></div>
-    <div class="pet ${m.id}" data-act="pet" style="animation-delay:-${Date.now() % PET_MS[m.id]}ms">
+    <div class="pet-shadow ${pose}"></div>
+    <div class="pet ${pose}" data-act="pet">
       <img data-pet alt="Chopper">
-      ${m.fx ? `<span class="fx">${m.fx}</span>` : ""}${item ? `<span class="buddy">${item.icon}</span>` : ""}
+      ${pose === "sleep" ? ZZ : ""}${item ? `<span class="buddy">${item.icon}</span>` : ""}
     </div>
     <div class="scene-bar">
       <div class="datenav">
@@ -366,9 +408,8 @@ function viewHome() {
     </section>
 
     <section class="card">
-      <div class="card-h"><span class="lbl">Plan de comidas</span></div>
-      ${plan.map((r) => `<button class="recipe" data-act="recipe" data-id="${r.id}"><img src="assets/recetas/${r.id}.jpg" alt="" loading="lazy">
-        <div class="grow"><div class="t">${esc(r.name)}</div><div class="s">${r.kcal} kcal • ${r.min} min</div></div></button>`).join("")}
+      <div class="card-h"><span class="lbl">Recetas para ${isToday ? "ahora" : "este día"}</span><button class="link" data-act="allRecipes">Ver todas</button></div>
+      ${plan.map(recipeCard).join("")}
     </section>
 
     <section class="card">
@@ -414,11 +455,16 @@ function weightFoot() {
   if (Math.abs(diff) < 0.05) return `🎉 ¡Llegaste a tu meta de ${fmt1(gw)} kg!`;
   return `${fmt1(Math.abs(diff))} kg ${diff > 0 ? "arriba" : "abajo"} de la meta: ${fmt1(gw)} kg`;
 }
+// Dos recetas por día: la comida que toca según la hora y la que sigue. Cambian cada día.
 function planFor(k) {
-  const n = Math.floor(parseD(k).getTime() / 864e5);
-  const pick = (type, off) => { const l = RECIPES.filter((r) => r.type === type); return l[(n + off) % l.length]; };
-  return [pick("desayuno", 0), pick("almuerzo", 1), pick("cena", 2), pick("snack", 3)];
+  const n = Math.floor(parseD(k).getTime() / 864e5), h = k === today() ? new Date().getHours() : 12;
+  const types = h < 11 ? ["desayuno", "almuerzo"] : h < 16 ? ["almuerzo", "snack"] : h < 19 ? ["snack", "cena"] : ["cena", "snack"];
+  return types.map((type, i) => { const l = RECIPES.filter((r) => r.type === type); return l[(n + i * 3) % l.length]; });
 }
+const mealName = (id) => MEALS.find((m) => m.id === id)?.name || "";
+const recipeCard = (r) => `<button class="recipe wide" data-act="recipe" data-id="${r.id}"><img src="assets/recetas/${r.id}.jpg" alt="" loading="lazy">
+  <div class="grow"><div class="kind">${mealName(r.type)} · ${r.kcal} kcal · ${r.min} min</div><div class="t">${esc(r.name)}</div>
+  <div class="ing">${esc(r.ing.join(" · "))}</div></div></button>`;
 
 function chRow(ch, k, claimed) {
   const [v, g] = ch.prog(k), done = claimed || isDone(ch, k);
@@ -691,9 +737,12 @@ function drawPreview() {
   $("#preview").innerHTML = `<div><b>${fmt(v.kcal)}</b><small>kcal</small></div><div><b>${fmt1(v.c)}</b><small>carbos</small></div><div><b>${fmt1(v.f)}</b><small>grasas</small></div><div><b>${fmt1(v.p)}</b><small>proteína</small></div><div><b>${sc ?? "–"}</b><small>puntos</small></div>`;
 }
 function logFood(entry) {
-  mutDay(curDate).foods.push({ id: uid(), t: Date.now(), ...entry });
-  eating = Date.now(); setTimeout(() => { if (view === "home") render(); }, 3600);
+  const k = curDate, over = () => totals(k).kcal > S.goals.kcal * 1.15, wasIn = inRange(k), wasOver = over();
+  mutDay(k).foods.push({ id: uid(), t: Date.now(), ...entry });
   closeSheet(); commit();
+  // Chopper come y, si con esto se cumplió la meta o se pasó, celebra o llora una vez.
+  const next = k !== today() ? null : inRange(k) && !wasIn ? "party" : over() && !wasOver ? "sad" : null;
+  playPet("eat", 2).then((done) => { if (done && next) playPet(next); });
 }
 function remember(f) {
   S.recent = [f, ...S.recent.filter((r) => r.name !== f.name)].slice(0, 15);
@@ -741,19 +790,23 @@ function sheetRecipe(id) {
     <div class="preview"><div><b>${r.kcal}</b><small>kcal</small></div><div><b>${r.c}</b><small>carbos</small></div><div><b>${r.f}</b><small>grasas</small></div><div><b>${r.p}</b><small>proteína</small></div><div><b>${r.min}</b><small>min</small></div></div>
     <h3>Ingredientes</h3><ul>${r.ing.map((i) => `<li>${esc(i)}</li>`).join("")}</ul>
     <h3>Preparación</h3><ol>${r.steps.map((i) => `<li>${esc(i)}</li>`).join("")}</ol>
-    <button class="btn" data-act="logRecipe" data-id="${r.id}">Registrar esta comida</button>`, "tall");
+    <button class="btn" data-act="logRecipe" data-id="${r.id}">Registrar esta comida</button>
+    <button class="btn ghost" data-act="allRecipes">Ver todas las recetas</button>`, "tall");
+}
+function sheetRecipes() {
+  sheet(`<h2>Recetas</h2><p class="s">Toca una para ver los ingredientes y la preparación.</p>
+    ${MEALS.map((m) => `<div class="meal-h">${m.icon} ${m.name}</div>` + RECIPES.filter((r) => r.type === m.id).map((r) => `<button class="recipe" data-act="recipe" data-id="${r.id}">
+      <img src="assets/recetas/${r.id}.jpg" alt="" loading="lazy"><div class="grow"><div class="t">${esc(r.name)}</div><div class="s">${r.kcal} kcal • ${r.min} min</div></div></button>`).join("")).join("")}`, "tall");
 }
 function sheetShop() {
   const row = (x) => {
     const own = S.owned.includes(x.id), active = S.bg === x.id || S.item === x.id;
-    const btn = x.kind === "use" ? `<button class="pill-btn" data-act="buy" data-id="${x.id}" ${S.coins < x.price || S.hearts >= 4 ? "disabled" : ""}>${x.price} ฿</button>`
-      : own ? `<button class="pill-btn ${active ? "on" : ""}" data-act="equip" data-id="${x.id}">${active ? (x.kind === "item" ? "Quitar" : "En uso") : "Usar"}</button>`
+    const btn = own ? `<button class="pill-btn ${active ? "on" : ""}" data-act="equip" data-id="${x.id}">${active ? (x.kind === "item" ? "Quitar" : "En uso") : "Usar"}</button>`
       : `<button class="pill-btn" data-act="buy" data-id="${x.id}" ${S.coins < x.price ? "disabled" : ""}>${x.price} ฿</button>`;
     return `<div class="row">${x.kind === "bg" ? `<img class="thumb" src="assets/fondos/${x.id}.jpg" alt="">` : `<span class="thumb em">${x.icon}</span>`}
       <div class="grow"><div class="t">${x.name}</div><div class="s">${x.desc || (x.kind === "bg" ? "Fondo" : "Compañero de Chopper")}</div></div>${btn}</div>`;
   };
   sheet(`<h2>Tienda <span class="chip dark">${fmt(S.coins)} ฿</span></h2>
-    <div class="meal-h">Cuidados</div>${SHOP.filter((x) => x.kind === "use").map(row).join("")}
     <div class="meal-h">Fondos</div>${SHOP.filter((x) => x.kind === "bg").map(row).join("")}
     <div class="meal-h">Compañeros</div>${SHOP.filter((x) => x.kind === "item").map(row).join("")}`, "tall");
 }
@@ -846,7 +899,10 @@ const A = {
   settings: sheetSettings, shop: sheetShop, addWater: sheetWater, addWeight: sheetWeight, addWorkout: sheetWorkout,
   addFood: () => sheetSearch(), newFood: () => sheetNewFood(), quickAdd: sheetQuick, scan: sheetScan,
   pet: (el) => {
-    el.querySelector("img")?.animate?.([{ transform: "scale(1)" }, { transform: "scale(1.09,.88)", offset: 0.3 }, { transform: "scale(.95,1.06)", offset: 0.6 }, { transform: "scale(1)" }], { duration: 520, easing: "cubic-bezier(.3,.7,.3,1)" });
+    if (fasting()) return sheetFast();
+    if (petPlaying) return;
+    if (reduced || petFailed) el.querySelector("img")?.animate?.([{ transform: "scale(1)" }, { transform: "scale(1.09,.88)", offset: 0.3 }, { transform: "scale(.95,1.06)", offset: 0.6 }, { transform: "scale(1)" }], { duration: 520, easing: "cubic-bezier(.3,.7,.3,1)" });
+    else playPet(Math.random() < 0.65 ? "happy" : "party");
     toast(["¡No me hace feliz que me toques, tonto~ 🩷", "¡Soy un reno, no un mapache!", "¿Ya tomaste agua?", "¡El algodón de azúcar es lo mejor!"][Math.floor(Math.random() * 4)]);
   },
   kcalMode: () => { S.kcalMode = S.kcalMode === "consumidas" ? "restantes" : "consumidas"; save(); render(); },
@@ -857,13 +913,18 @@ const A = {
   delWorkout: (el) => { const d = mutDay(curDate); d.workouts = d.workouts.filter((x) => x.id !== el.dataset.id); commit(); },
   glass: (el) => { const d = mutDay(curDate), i = +el.dataset.i, full = Math.floor(d.water / 250); d.water = i < full ? i * 250 : (i + 1) * 250; lastGlass = i < full ? -1 : i; commit(); lastGlass = -1; },
   water: (el) => { const d = mutDay(curDate); d.water = Math.max(0, d.water + +el.dataset.ml); checkChallenges(); save(); render(); sheetWater(); },
+  // Con un ayuno en curso se abre su pantalla; desde ahí se termina.
   fastToggle: () => {
-    if (S.fast.start) {
-      const h = fastHours(), ok = h >= S.goals.fastH;
-      S.fast.history.push({ start: S.fast.start, end: Date.now(), ok }); S.fast.start = null;
-      toast(ok ? `🌙 ¡Ayuno de ${hm(h)} completado!` : `Ayuno terminado a las ${hm(h)}`);
-    } else { S.fast.start = Date.now(); toast("🌙 Ayuno iniciado. ¡Tú puedes!"); }
-    closeSheet(); commit();
+    if (S.fast.start) return sheetFast();
+    S.fast.start = Date.now(); toast("🌙 Ayuno iniciado. ¡Tú puedes!");
+    closeSheet(); commit(); playPet("lie");
+  },
+  endFast: () => {
+    if (!S.fast.start) return closeSheet();
+    const h = fastHours(), ok = h >= S.goals.fastH;
+    S.fast.history.push({ start: S.fast.start, end: Date.now(), ok }); S.fast.start = null;
+    toast(ok ? `🌙 ¡Ayuno de ${hm(h)} completado!` : `Ayuno terminado a las ${hm(h)}`);
+    closeSheet(); commit(); playPet("happy");
   },
   pickFood: (el) => sheetPortion(searchPool[+el.dataset.i]),
   searchOnline,
@@ -892,12 +953,11 @@ const A = {
     mutDay(curDate).workouts.push({ id: uid(), name: WORKOUTS[num($("#wo-type").value)].name, min: r0(num($("#wo-min").value)), kcal: r0(kcal) });
     closeSheet(); commit();
   },
-  recipe: (el) => sheetRecipe(el.dataset.id),
+  recipe: (el) => sheetRecipe(el.dataset.id), allRecipes: sheetRecipes,
   logRecipe: (el) => { const r = RECIPES.find((x) => x.id === el.dataset.id); logFood({ name: r.name, meal: r.type, kcal: r.kcal, c: r.c, f: r.f, p: r.p, fi: r.fi }); },
   buy: (el) => {
     const x = SHOP.find((s) => s.id === el.dataset.id); if (!x || S.coins < x.price) return;
-    if (x.kind === "use") { if (S.hearts >= 4) return; S.hearts++; toast("🍭 ¡Algodón de azúcar! +1 ❤️"); }
-    else { S.owned.push(x.id); if (x.kind === "bg") S.bg = x.id; else S.item = x.id; toast(`${x.icon} ¡${x.name} desbloqueado!`); }
+    S.owned.push(x.id); if (x.kind === "bg") S.bg = x.id; else S.item = x.id; toast(`${x.icon} ¡${x.name} desbloqueado!`);
     S.coins -= x.price; save(); render(); sheetShop();
   },
   equip: (el) => { const x = SHOP.find((s) => s.id === el.dataset.id); if (x.kind === "bg") S.bg = x.id; else S.item = S.item === x.id ? null : x.id; save(); render(); sheetShop(); },
@@ -955,6 +1015,7 @@ document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeSheet
 // ---------- arranque ----------
 if (S.profile && S.goals) { rollover(); checkChallenges(); save(); }
 render();
+greet();
 if (!S.profile) idbGet(KEY).then((json) => {
   if (!json || S.profile) return;
   try {
@@ -963,8 +1024,22 @@ if (!S.profile) idbGet(KEY).then((json) => {
   } catch {}
 });
 navigator.storage?.persist?.();
+function tickFast() {
+  if (!fasting()) return;
+  const h = fastHours();
+  if ($("#fastclock")) $("#fastclock").textContent = hm(h);
+  if ($("#fastbig")) { $("#fastbig").textContent = hm(h); $("#fastmsg").textContent = fastMsg(h, S.goals.fastH); }
+}
 setInterval(() => {
-  if (S.fast.start && $("#fastclock")) $("#fastclock").textContent = hm(fastHours());
+  tickFast();
   if (S.lastOpen && S.lastOpen !== today() && S.goals) { rollover(); curDate = today(); save(); render(); }
-}, 30000);
+}, 20000);
+// Al volver a la app después de un rato se repite el saludo (o la pantalla del ayuno).
+let hiddenAt = 0;
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) { hiddenAt = Date.now(); return; }
+  const away = hiddenAt && Date.now() - hiddenAt > 60000;
+  hiddenAt = 0; tickFast();
+  if (away) greet();
+});
 if ("serviceWorker" in navigator && location.protocol === "https:") navigator.serviceWorker.register("sw.js");
